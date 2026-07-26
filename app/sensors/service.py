@@ -107,7 +107,11 @@ class SensorHardware:
             except Exception as exc:
                 environment_errors.append(self._message(exc))
         else:
-            environment_errors.append(self.init_errors.get("light", "TSL2561 missing"))
+            environment_errors.append(
+                self.init_errors.get("light")
+                or self.init_errors.get("i2c")
+                or "TSL2561 missing"
+            )
         if self.scd4x is not None:
             try:
                 if self.scd4x.data_ready:
@@ -122,7 +126,11 @@ class SensorHardware:
             except Exception as exc:
                 environment_errors.append(self._message(exc))
         else:
-            environment_errors.append(self.init_errors.get("air", "SCD41 missing"))
+            environment_errors.append(
+                self.init_errors.get("air")
+                or self.init_errors.get("i2c")
+                or "SCD41 missing"
+            )
         if self.water is not None:
             try:
                 water.update({
