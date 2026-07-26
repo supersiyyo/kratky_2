@@ -81,3 +81,19 @@ def test_rollover_replaces_only_recorder(tmp_path: Path) -> None:
     assert worker.recording_process is new_recorder
     assert worker.current_recording is not None
     assert worker.current_recording != tmp_path / "old.mkv"
+
+
+def test_manual_recording_restart_keeps_camera_open(tmp_path: Path) -> None:
+    worker = worker_for(tmp_path)
+    capture = FakeProcess(capture=True)
+    recorder = FakeProcess()
+    worker.capture_process = capture  # type: ignore[assignment]
+    worker.recording_process = recorder  # type: ignore[assignment]
+
+    worker.restart_recording()
+
+    assert worker.capture_process is capture
+    assert capture.poll() is None
+    assert recorder.waited
+    assert worker.recording_process is None
+    assert worker.runtime.status is CameraStatus.STARTING

@@ -1,9 +1,9 @@
 # Kratky Monitor
 
 Kratky Monitor is a direct, reproducible Raspberry Pi recording system for a
-long-running hydroponics experiment. It replaces OBS → RTMP → NGINX with one
-supervised FFmpeg process per camera, a narrow local control socket, an
-independent sensor collector, and a browser dashboard.
+long-running hydroponics experiment. It replaces OBS, RTMP, and NGINX with a
+persistent FFmpeg capture stage plus a detachable recorder per camera, a narrow
+local control socket, an independent sensor collector, and a browser dashboard.
 
 The repository does not contain camera footage, sensor history, credentials, or
 machine-specific configuration.
@@ -27,20 +27,24 @@ future environment camera as `PLANNED`. A read-only audit on 2026-07-25 found:
 
 ## Architecture
 
-For each enabled camera, the capture manager runs:
+For each enabled camera, the capture manager keeps the physical V4L2 device open
+in one persistent FFmpeg capture process:
 
 ```text
 V4L2 MJPEG input
   → fps=1
   → 1920×1080 scale
   → split
-      → H.265 / MKV hourly archive (no audio)
+      → raw frames → detachable H.265 / MKV recorder (no audio)
       → reduced JPEG overwritten atomically in /run/kratky
 ```
 
 The manager owns pause state and writes status to `/run/kratky`. The Flask
 dashboard can only send `pause`, `resume`, `restart`, and `status` JSON commands
 over `/run/kratky/capture-control.sock`; it receives no sudo or systemd access.
+Pausing or performing an hourly rollover finalizes only the recorder. The
+physical camera remains open and its dashboard preview continues to refresh.
+Only a genuine capture failure or a capture-service restart reopens the V4L2 device.
 Sensor failure never stops video.
 
 Hourly files use their actual process start time:

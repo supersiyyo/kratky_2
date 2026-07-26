@@ -224,6 +224,15 @@ class CameraWorker:
             CameraStatus.PLANNED if not self.camera.enabled else CameraStatus.PAUSED
         )
 
+    def restart_recording(self, paused: bool = False) -> None:
+        self.stop_recording()
+        self.recording_retry_at = 0
+        self.runtime.status = (
+            CameraStatus.PLANNED
+            if not self.camera.enabled
+            else CameraStatus.PAUSED if paused else CameraStatus.STARTING
+        )
+
     def stop(self, paused: bool = False) -> None:
         self.stop_recording()
         self.stop_capture()
@@ -325,7 +334,7 @@ class CameraWorker:
                 return "start"
             return None
         if self.rollover_at and now >= self.rollover_at:
-            self.stop_recording()
+            self.restart_recording()
             self.start_recording(datetime.now(now.tzinfo))
             return "rollover"
         recovered = self.gap_started_at is not None
