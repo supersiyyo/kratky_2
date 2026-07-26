@@ -1,0 +1,34 @@
+[Unit]
+Description=Kratky camera capture manager
+After=local-fs.target
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=kratky
+Group=kratky
+WorkingDirectory=/home/kratky/kratky-monitor
+Environment=KRATKY_CONFIG=/etc/kratky/config.yaml
+ExecStart=/home/kratky/kratky-monitor/.venv/bin/python -m app.capture.service
+Restart=on-failure
+RestartSec=10
+TimeoutStopSec=30
+KillMode=mixed
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/kratky /var/lib/kratky
+RuntimeDirectory=kratky
+RuntimeDirectoryMode=0750
+StateDirectory=kratky
+StateDirectoryMode=0750
+SupplementaryGroups=video
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30
+LogRateLimitBurst=100
+
+[Install]
+WantedBy=multi-user.target

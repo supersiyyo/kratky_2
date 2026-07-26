@@ -1,0 +1,87 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Kratky monitor</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+  <script defer src="{{ url_for('static', filename='dashboard.js') }}"></script>
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">Hydroponics observatory</p>
+      <h1>Kratky monitor</h1>
+    </div>
+    <div class="header-actions">
+      <a class="button ghost" href="{{ url_for('recordings') }}">Today’s recordings</a>
+      <span id="version" class="version">Version —</span>
+    </div>
+  </header>
+
+  <main>
+    <section class="global-bar panel">
+      <div>
+        <h2>Capture controls</h2>
+        <p>Actions affect finalized MKV segments; the manager stays online.</p>
+      </div>
+      <div class="controls">
+        <button data-action="pause" data-camera="all">Pause all</button>
+        <button data-action="resume" data-camera="all">Resume all</button>
+        <button class="danger" data-action="restart" data-camera="all">Restart all</button>
+      </div>
+    </section>
+
+    <section id="camera-grid" class="camera-grid">
+      {% for name, camera in config.cameras.items() %}
+      <article class="camera-card panel" data-camera-card="{{ name }}">
+        <div class="card-heading">
+          <div>
+            <p class="eyebrow">{{ "Water camera" if name == "water" else "Environment camera" }}</p>
+            <h2>{{ name|capitalize }}</h2>
+          </div>
+          <span class="status" data-field="status">{{ "STARTING" if camera.enabled else "PLANNED" }}</span>
+        </div>
+        <div class="preview-wrap">
+          {% if camera.enabled %}
+          <img data-preview="{{ name }}" alt="{{ name }} camera preview">
+          <div class="preview-placeholder">Waiting for first frame…</div>
+          {% else %}
+          <div class="planned">
+            <span>◌</span>
+            <strong>Camera planned</strong>
+            <small>Hardware will be added for production.</small>
+          </div>
+          {% endif %}
+        </div>
+        <dl class="facts">
+          <div><dt>Last frame</dt><dd data-field="last_frame_at">—</dd></div>
+          <div><dt>Current file</dt><dd data-field="current_recording">—</dd></div>
+          <div><dt>Reconnects</dt><dd data-field="reconnects">0</dd></div>
+          <div><dt>Last gap</dt><dd data-field="last_gap_seconds">—</dd></div>
+        </dl>
+        <div class="sensor-values" data-sensors="{{ name }}"></div>
+        <p class="error" data-field="last_error"></p>
+        <div class="controls">
+          <button data-action="pause" data-camera="{{ name }}">Pause</button>
+          <button data-action="resume" data-camera="{{ name }}">Resume</button>
+          <button class="danger" data-action="restart" data-camera="{{ name }}">Restart</button>
+        </div>
+      </article>
+      {% endfor %}
+    </section>
+
+    <section class="lower-grid">
+      <article class="panel">
+        <div class="card-heading"><h2>Storage</h2><span id="storage-health" class="status neutral">MEASURING</span></div>
+        <dl id="storage" class="facts"></dl>
+      </article>
+      <article class="panel">
+        <div class="card-heading"><h2>Recent events</h2></div>
+        <ol id="events" class="events"><li>No reconnects or gaps reported.</li></ol>
+      </article>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

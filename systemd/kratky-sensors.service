@@ -1,0 +1,34 @@
+[Unit]
+Description=Kratky sensor collector
+After=local-fs.target dev-i2c\x2d1.device
+Wants=dev-i2c\x2d1.device
+StartLimitIntervalSec=300
+StartLimitBurst=5
+
+[Service]
+Type=simple
+User=kratky
+Group=kratky
+WorkingDirectory=/home/kratky/kratky-monitor
+Environment=KRATKY_CONFIG=/etc/kratky/config.yaml
+ExecStart=/home/kratky/kratky-monitor/.venv/bin/python -m app.sensors.service
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=20
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/kratky /var/lib/kratky/sensors
+RuntimeDirectory=kratky
+RuntimeDirectoryMode=0750
+StateDirectory=kratky
+StateDirectoryMode=0750
+SupplementaryGroups=dialout i2c gpio
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30
+LogRateLimitBurst=60
+
+[Install]
+WantedBy=multi-user.target

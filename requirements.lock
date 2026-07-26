@@ -1,0 +1,12 @@
+# Fully pinned direct runtime dependencies. Transitive hashes are intentionally
+# omitted because Raspberry Pi wheels vary by Debian/aarch64 release.
+Adafruit-Blinka==8.67.0
+adafruit-circuitpython-scd4x==1.4.6
+adafruit-circuitpython-tsl2561==3.3.10
+Flask==3.1.2
+gunicorn==23.0.0
+minimalmodbus==2.1.1
+PyYAML==6.0.2
+pyserial==3.5
+pytest==8.4.1
+tzdata==2025.2

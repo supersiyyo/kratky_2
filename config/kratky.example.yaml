@@ -1,0 +1,56 @@
+deployment:
+  mode: development
+  timezone: America/Los_Angeles
+
+storage:
+  root: /var/lib/kratky/recordings
+  retention_days: 30
+  minimum_free_gib: 2
+  capacity_warning_days: 35
+
+runtime:
+  run_dir: /run/kratky
+  state_dir: /var/lib/kratky/state
+  sensor_dir: /var/lib/kratky/sensors
+  stale_after_seconds: 3
+  shutdown_timeout_seconds: 15
+
+dashboard:
+  host: 0.0.0.0
+  port: 8080
+
+sensors:
+  enabled: true
+  interval_seconds: 1
+  history_interval_seconds: 60
+  modbus_device: /dev/ttyUSB0
+  modbus_slave: 1
+
+cameras:
+  water:
+    enabled: true
+    required: true
+    device: /dev/v4l/by-id/usb-UltraSemi_Guermok_USB2_Video_20210621-video-index0
+    resolution: 1920x1080
+    input_format: mjpeg
+    input_fps: 10
+    archive_fps: 1
+    preview_fps: 1
+    preview_width: 960
+    encoder: libx265
+    crf: 28
+    preset: veryfast
+
+  environment:
+    enabled: false
+    required: false
+    device: null
+    resolution: 1920x1080
+    input_format: mjpeg
+    input_fps: 10
+    archive_fps: 1
+    preview_fps: 1
+    preview_width: 960
+    encoder: libx265
+    crf: 28
+    preset: veryfast

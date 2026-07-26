@@ -1,0 +1,50 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Today’s recordings · Kratky monitor</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+</head>
+<body>
+  <header>
+    <div><p class="eyebrow">Archive browser</p><h1>Today’s recordings</h1></div>
+    <a class="button ghost" href="{{ url_for('index') }}">Back to dashboard</a>
+  </header>
+  <main>
+    <section class="panel archive-panel">
+      <div class="card-heading">
+        <div><h2>{{ day }}</h2><p>Only finalized recordings can be opened or downloaded.</p></div>
+      </div>
+      {% for name, camera in cameras.items() %}
+      <div class="recording-group">
+        <h3>{{ name|capitalize }}</h3>
+        {% if not camera.enabled %}
+        <p class="planned-line"><span class="status neutral">PLANNED</span> Camera hardware is not installed in this profile.</p>
+        {% endif %}
+        {% for item in active if item.name == name %}
+        <div class="recording-row active">
+          <span><strong>Recording</strong><small>{{ item.started_at or "Starting" }}</small></span>
+          <span class="status">RECORDING</span>
+        </div>
+        {% endfor %}
+        {% for item in recordings if item.camera == name %}
+        <div class="recording-row">
+          <span>
+            <strong>{{ item.filename }}</strong>
+            <small>{{ item.start[11:19] }} → {{ item.end[11:19] }}</small>
+            {% if item.gap_before_seconds %}<small class="gap">Estimated gap before: {{ item.gap_before_seconds|round(1) }} seconds</small>{% endif %}
+            {% if item.restart_boundary %}<small>Restart boundary</small>{% endif %}
+          </span>
+          <span>{{ (item.size / 1048576)|round(1) }} MiB</span>
+          <a class="button ghost" href="{{ url_for('recording_file', relative=item.path) }}">Open / download</a>
+        </div>
+        {% else %}
+          {% if camera.enabled %}<p class="empty">No completed recordings yet.</p>{% endif %}
+        {% endfor %}
+      </div>
+      {% endfor %}
+    </section>
+  </main>
+</body>
+</html>
