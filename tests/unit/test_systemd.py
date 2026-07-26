@@ -8,3 +8,11 @@ def test_sensor_service_uses_writable_working_directory() -> None:
 
     assert "WorkingDirectory=/run/kratky" in unit
     assert "Environment=PYTHONPATH=/home/kratky/kratky-monitor" in unit
+
+
+def test_installation_verification_retries_dashboard_startup() -> None:
+    script = (
+        Path(__file__).parents[2] / "scripts" / "verify-installation.sh"
+    ).read_text(encoding="utf-8")
+
+    assert 'check_retry "dashboard responds" 15 1' in script

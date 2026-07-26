@@ -18,6 +18,25 @@ check() {
   fi
 }
 
+check_retry() {
+  local label="$1"
+  local attempts="$2"
+  local delay_seconds="$3"
+  shift 3
+  local attempt
+  for ((attempt = 1; attempt <= attempts; attempt++)); do
+    if "$@" >/dev/null 2>&1; then
+      printf 'OK    %s\n' "${label}"
+      return
+    fi
+    if [[ "${attempt}" -lt "${attempts}" ]]; then
+      sleep "${delay_seconds}"
+    fi
+  done
+  printf 'FAIL  %s\n' "${label}"
+  failures=$((failures + 1))
+}
+
 check "FFmpeg installed" command -v ffmpeg
 check "V4L2 tools installed" command -v v4l2-ctl
 check "virtual environment" test -x "${PYTHON}"
@@ -29,7 +48,8 @@ check "runtime writable" runuser -u kratky -- test -w /run/kratky
 check "capture service active" systemctl is-active --quiet kratky-capture.service
 check "dashboard service active" systemctl is-active --quiet kratky-dashboard.service
 check "sensor service active" systemctl is-active --quiet kratky-sensors.service
-check "dashboard responds" curl --fail --silent --max-time 5 http://127.0.0.1:8080/api/status
+check_retry "dashboard responds" 15 1 \
+  curl --fail --silent --max-time 5 http://127.0.0.1:8080/api/status
 
 "${PYTHON}" - "${CONFIG_PATH}" <<'PY' || failures=$((failures + 1))
 import sys
