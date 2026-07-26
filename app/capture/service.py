@@ -74,7 +74,7 @@ class CaptureManager:
                 worker = self.workers[name]
                 if action == "pause":
                     self.paused.add(name)
-                    worker.stop(paused=True)
+                    worker.pause_recording()
                 elif action == "resume":
                     self.paused.discard(name)
                     worker.retry_at = 0
