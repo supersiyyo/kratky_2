@@ -1,7 +1,7 @@
 [Unit]
 Description=Kratky sensor collector
-After=local-fs.target dev-i2c\x2d1.device
-Wants=dev-i2c\x2d1.device
+After=local-fs.target dev-i2c\x2d1.device kratky-capture.service
+Wants=dev-i2c\x2d1.device kratky-capture.service
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
@@ -20,10 +20,6 @@ PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=read-only
 ReadWritePaths=/run/kratky /var/lib/kratky/sensors
-RuntimeDirectory=kratky
-RuntimeDirectoryMode=0750
-StateDirectory=kratky
-StateDirectoryMode=0750
 SupplementaryGroups=dialout i2c gpio
 StandardOutput=journal
 StandardError=journal

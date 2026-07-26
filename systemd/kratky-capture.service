@@ -22,6 +22,7 @@ ProtectHome=read-only
 ReadWritePaths=/run/kratky /var/lib/kratky
 RuntimeDirectory=kratky
 RuntimeDirectoryMode=0750
+RuntimeDirectoryPreserve=yes
 StateDirectory=kratky
 StateDirectoryMode=0750
 SupplementaryGroups=video
