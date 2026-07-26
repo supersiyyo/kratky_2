@@ -9,8 +9,9 @@ StartLimitBurst=5
 Type=simple
 User=kratky
 Group=kratky
-WorkingDirectory=/home/kratky/kratky-monitor
+WorkingDirectory=/run/kratky
 Environment=KRATKY_CONFIG=/etc/kratky/config.yaml
+Environment=PYTHONPATH=/home/kratky/kratky-monitor
 ExecStart=/home/kratky/kratky-monitor/.venv/bin/python -m app.sensors.service
 Restart=on-failure
 RestartSec=15
