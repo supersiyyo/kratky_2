@@ -7,21 +7,32 @@ from app.common.config import CameraConfig
 
 
 @dataclass(frozen=True, slots=True)
-class FfmpegCommand:
+class CaptureCommand:
+    argv: list[str]
+    preview: Path
+    frame_size: int
+
+
+@dataclass(frozen=True, slots=True)
+class RecorderCommand:
     argv: list[str]
     recording: Path
-    preview: Path
 
 
-def build_ffmpeg_command(
+def _dimensions(camera: CameraConfig) -> tuple[int, int]:
+    width, height = camera.resolution.split("x", 1)
+    return int(width), int(height)
+
+
+def build_capture_command(
     camera: CameraConfig,
-    recording: Path,
     preview: Path,
     ffmpeg: str = "/usr/bin/ffmpeg",
-) -> FfmpegCommand:
+) -> CaptureCommand:
+    """Keep V4L2 open and emit one raw archive frame plus one preview per second."""
     if not camera.device:
         raise ValueError("enabled camera has no device")
-    width, height = camera.resolution.split("x", 1)
+    width, height = _dimensions(camera)
     filter_graph = (
         f"[0:v]fps=fps={camera.archive_fps}:round=down,"
         f"scale={width}:{height}:flags=lanczos,split=2[archive][preview];"
@@ -41,6 +52,39 @@ def build_ffmpeg_command(
         "-filter_complex", filter_graph,
         "-map", "[archive]",
         "-an",
+        "-pix_fmt", "yuv420p",
+        "-f", "rawvideo",
+        "pipe:1",
+        "-map", "[preview_scaled]",
+        "-an",
+        "-c:v", "mjpeg",
+        "-q:v", "4",
+        "-f", "image2",
+        "-update", "1",
+        "-atomic_writing", "1",
+        str(preview),
+    ]
+    return CaptureCommand(argv, preview, width * height * 3 // 2)
+
+
+def build_recorder_command(
+    camera: CameraConfig,
+    recording: Path,
+    ffmpeg: str = "/usr/bin/ffmpeg",
+) -> RecorderCommand:
+    """Encode raw frames supplied by the persistent capture process."""
+    argv = [
+        ffmpeg,
+        "-hide_banner",
+        "-nostdin",
+        "-loglevel", "warning",
+        "-f", "rawvideo",
+        "-pixel_format", "yuv420p",
+        "-video_size", camera.resolution,
+        "-framerate", str(camera.archive_fps),
+        "-i", "pipe:0",
+        "-map", "0:v:0",
+        "-an",
         "-c:v", camera.encoder,
     ]
     if camera.encoder == "libx265":
@@ -50,13 +94,5 @@ def build_ffmpeg_command(
         "-r", str(camera.archive_fps),
         "-f", "matroska",
         str(recording),
-        "-map", "[preview_scaled]",
-        "-an",
-        "-c:v", "mjpeg",
-        "-q:v", "4",
-        "-f", "image2",
-        "-update", "1",
-        "-atomic_writing", "1",
-        str(preview),
     ])
-    return FfmpegCommand(argv, recording, preview)
+    return RecorderCommand(argv, recording)
