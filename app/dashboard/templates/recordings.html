@@ -3,18 +3,18 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Today’s recordings · Kratky monitor</title>
+  <title>Recordings · Kratky monitor</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
 </head>
 <body>
   <header>
-    <div><p class="eyebrow">Archive browser</p><h1>Today’s recordings</h1></div>
-    <a class="button ghost" href="{{ url_for('index') }}">Back to dashboard</a>
+    <div><p class="eyebrow">Archive browser</p><h1>Recordings</h1></div>
+    <a class="button primary" href="{{ url_for('index') }}">Live dashboard</a>
   </header>
   <main>
     <section class="panel archive-panel">
       <div class="card-heading">
-        <div><h2>{{ day }}</h2><p>Only finalized recordings can be opened or downloaded.</p></div>
+        <div><h2>{{ day }}</h2><p>Recordings for the selected date. Only finalized recordings can be opened or downloaded.</p></div>
       </div>
       {% for name, camera in cameras.items() %}
       <div class="recording-group">

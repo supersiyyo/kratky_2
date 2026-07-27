@@ -7,7 +7,8 @@ import socketserver
 import subprocess
 import threading
 import time
-from datetime import datetime
+from dataclasses import asdict
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
@@ -39,6 +40,8 @@ def git_version(repo: Path | None = None) -> str:
 
 
 class CaptureManager:
+    CONTROL_UNLOCK_SECONDS = 60
+
     def __init__(self, config: AppConfig):
         self.config = config
         self.timezone = ZoneInfo(config.deployment.timezone)
@@ -50,25 +53,108 @@ class CaptureManager:
             for name, camera in config.cameras.items()
         }
         self.events: list[CaptureEvent] = []
+        self.control_locked = True
+        self.control_unlocked_until: datetime | None = None
+        self.control_lock_history: list[CaptureEvent] = []
         self.version = git_version()
         self.running = True
         self.lock = threading.RLock()
         self._last_retention = 0.0
         self._storage: dict[str, Any] = {}
+        self._record_control_lock_event(
+            "control_lock",
+            "controls locked on service start",
+        )
 
     def _targets(self, camera: str | None) -> list[str]:
         if camera in (None, "all"):
-            return list(self.workers)
+            return [
+                name for name, worker in self.workers.items()
+                if worker.camera.enabled
+            ]
         if camera not in self.workers:
             raise ValueError(f"unknown camera: {camera}")
+        if not self.workers[camera].camera.enabled:
+            raise ValueError(f"camera is not enabled: {camera}")
         return [camera]
 
+    def _record_control_lock_event(self, kind: str, detail: str) -> None:
+        event = CaptureEvent(
+            datetime.now(self.timezone).isoformat(),
+            "system",
+            kind,
+            detail,
+        )
+        self.control_lock_history.append(event)
+        self.control_lock_history = self.control_lock_history[-20:]
+        self.events.append(event)
+        self.events = self.events[-100:]
+
+    def _set_control_locked(self, locked: bool, detail: str) -> None:
+        if self.control_locked == locked:
+            return
+        self.control_locked = locked
+        if locked:
+            self.control_unlocked_until = None
+            self._record_control_lock_event("control_lock", detail)
+        else:
+            self.control_unlocked_until = (
+                datetime.now(self.timezone)
+                + timedelta(seconds=self.CONTROL_UNLOCK_SECONDS)
+            )
+            self._record_control_lock_event("control_unlock", detail)
+
+    def _expire_control_lock(self) -> None:
+        if (
+            not self.control_locked
+            and self.control_unlocked_until is not None
+            and datetime.now(self.timezone) >= self.control_unlocked_until
+        ):
+            self._set_control_locked(True, "controls locked after 60-second timeout")
+
+    def _control_lock_snapshot(self) -> dict[str, Any]:
+        self._expire_control_lock()
+        return {
+            "locked": self.control_locked,
+            "unlocked_until": (
+                self.control_unlocked_until.isoformat()
+                if self.control_unlocked_until else None
+            ),
+            "timeout_seconds": self.CONTROL_UNLOCK_SECONDS,
+            "history": [asdict(event) for event in self.control_lock_history],
+        }
+
     def command(self, action: str, camera: str | None = None) -> dict[str, Any]:
-        if action not in {"pause", "resume", "restart", "status"}:
+        if action not in {
+            "pause", "resume", "restart", "status", "lock", "unlock"
+        }:
             raise ValueError(f"unknown action: {action}")
         with self.lock:
+            self._expire_control_lock()
             if action == "status":
                 return self.snapshot()
+            if action == "unlock":
+                self._set_control_locked(False, "controls manually unlocked")
+                self.write_snapshot()
+                return {
+                    "ok": True,
+                    "action": action,
+                    "control_lock": self._control_lock_snapshot(),
+                }
+            if action == "lock":
+                self._set_control_locked(True, "controls manually locked")
+                self.write_snapshot()
+                return {
+                    "ok": True,
+                    "action": action,
+                    "control_lock": self._control_lock_snapshot(),
+                }
+            if self.control_locked:
+                return {
+                    "ok": False,
+                    "code": "controls_locked",
+                    "error": "capture controls are locked",
+                }
             targets = self._targets(camera)
             for name in targets:
                 worker = self.workers[name]
@@ -83,6 +169,7 @@ class CaptureManager:
                 self.events.append(CaptureEvent.now(name, action, f"{action} requested"))
             self.events = self.events[-100:]
             self.pause_store.save(self.paused)
+            self._set_control_locked(True, f"controls locked after {action}")
             self.write_snapshot()
             return {"ok": True, "action": action, "cameras": targets}
 
@@ -156,7 +243,9 @@ class CaptureManager:
             self.events,
             self._storage,
         )
-        return snapshot.to_dict()
+        result = snapshot.to_dict()
+        result["control_lock"] = self._control_lock_snapshot()
+        return result
 
     def write_snapshot(self) -> None:
         atomic_write_json(capture_state_path(self.config), self.snapshot())
@@ -181,7 +270,14 @@ class _ControlHandler(socketserver.StreamRequestHandler):
         self.wfile.write((json.dumps(response) + "\n").encode())
 
 
-class ControlServer(socketserver.ThreadingUnixStreamServer):
+_ThreadingUnixStreamServer = getattr(
+    socketserver,
+    "ThreadingUnixStreamServer",
+    socketserver.ThreadingTCPServer,
+)
+
+
+class ControlServer(_ThreadingUnixStreamServer):
     daemon_threads = True
     allow_reuse_address = True
 

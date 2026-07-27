@@ -56,7 +56,19 @@ def create_app(config: AppConfig | None = None) -> Flask:
     def status_payload() -> dict[str, Any]:
         capture = read_json(
             capture_state_path(app_config),
-            {"updated_at": None, "version": "unknown", "cameras": {}, "events": [], "storage": {}},
+            {
+                "updated_at": None,
+                "version": "unknown",
+                "cameras": {},
+                "events": [],
+                "storage": {},
+                "control_lock": {
+                    "locked": True,
+                    "unlocked_until": None,
+                    "timeout_seconds": 60,
+                    "history": [],
+                },
+            },
         )
         sensors = read_json(
             sensor_state_path(app_config),
@@ -89,6 +101,20 @@ def create_app(config: AppConfig | None = None) -> Flask:
             return jsonify({"ok": False, "error": "invalid camera"}), 400
         try:
             result = send_command(app_config, action, camera)
+        except RuntimeError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 503
+        if result.get("ok"):
+            return jsonify(result)
+        return jsonify(result), (423 if result.get("code") == "controls_locked" else 400)
+
+    @app.post("/api/control-lock")
+    def control_lock():  # type: ignore[no-untyped-def]
+        body = request.get_json(silent=True) or {}
+        action = body.get("action")
+        if action not in {"lock", "unlock"}:
+            return jsonify({"ok": False, "error": "invalid lock action"}), 400
+        try:
+            result = send_command(app_config, action, None)
         except RuntimeError as exc:
             return jsonify({"ok": False, "error": str(exc)}), 503
         return jsonify(result), (200 if result.get("ok") else 400)

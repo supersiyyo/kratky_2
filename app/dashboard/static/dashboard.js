@@ -49,8 +49,36 @@ function renderSensors(camera, sensors) {
     }).join("") || `<p>Sensor data ${section?.status?.toLowerCase() || "unavailable"}.</p>`;
 }
 
+function renderControlLock(controlLock = {}) {
+  const locked = controlLock.locked !== false;
+  const status = document.querySelector("#control-lock-status");
+  const toggle = document.querySelector("#control-lock-toggle");
+  const target = document.querySelector("#control-camera");
+  const expiry = document.querySelector("#control-lock-expiry");
+  status.textContent = locked ? "LOCKED" : "UNLOCKED";
+  status.className = locked ? "status warning" : "status";
+  toggle.textContent = locked ? "Unlock controls" : "Lock controls";
+  toggle.classList.toggle("lock-open", !locked);
+  target.disabled = locked;
+  document.querySelectorAll("button[data-action]").forEach(button => {
+    button.disabled = locked;
+  });
+  expiry.textContent = locked
+    ? "Controls are protected from accidental changes."
+    : `Automatically locks at ${fmtDate(controlLock.unlocked_until)}.`;
+
+  const history = [...(controlLock.history || [])].reverse().slice(0, 8);
+  document.querySelector("#control-lock-history").innerHTML = history.length
+    ? history.map(event => {
+        const label = event.kind === "control_unlock" ? "Unlocked" : "Locked";
+        return `<li><strong>${label}</strong><time>${fmtDate(event.timestamp)}</time></li>`;
+      }).join("")
+    : "<li>No lock activity recorded.</li>";
+}
+
 function render(data) {
   document.querySelector("#version").textContent = `Version ${data.capture.version || "unknown"}`;
+  renderControlLock(data.capture.control_lock);
   Object.entries(data.capture.cameras || {}).forEach(([name, camera]) => {
     const card = document.querySelector(`[data-camera-card="${name}"]`);
     if (!card) return;
@@ -79,7 +107,10 @@ function render(data) {
   health.textContent = storage.reserve_reached ? "RESERVE REACHED" : storage.capacity_warning ? "CAPACITY WARNING" : storage.free_bytes ? "HEALTHY" : "MEASURING";
   health.className = storage.reserve_reached ? "status error" : storage.capacity_warning ? "status warning" : "status";
 
-  const events = [...(data.capture.events || [])].reverse().slice(0, 12);
+  const events = [...(data.capture.events || [])]
+    .filter(event => !["control_lock", "control_unlock"].includes(event.kind))
+    .reverse()
+    .slice(0, 12);
   document.querySelector("#events").innerHTML = events.length ? events.map(event =>
     `<li><strong>${event.camera} · ${event.kind}</strong><br>${event.detail}<br><small>${fmtDate(event.timestamp)}</small></li>`
   ).join("") : "<li>No reconnects or gaps reported.</li>";
@@ -99,10 +130,35 @@ async function refresh() {
   }
 }
 
+document.querySelector("#control-lock-toggle").addEventListener("click", async () => {
+  const locked = document.querySelector("#control-lock-status").textContent === "LOCKED";
+  const action = locked ? "unlock" : "lock";
+  if (action === "unlock" && !confirm("Unlock recording controls for 60 seconds?")) return;
+  const button = document.querySelector("#control-lock-toggle");
+  button.disabled = true;
+  try {
+    const response = await fetch("/api/control-lock", {
+      method: "POST",
+      headers: {"Content-Type": "application/json"},
+      body: JSON.stringify({action}),
+    });
+    const result = await response.json();
+    if (!response.ok || !result.ok) throw new Error(result.error || `Status ${response.status}`);
+    showToast(`Controls ${action === "unlock" ? "unlocked" : "locked"}`);
+    await refresh();
+  } catch (error) {
+    showToast(error.message);
+  } finally {
+    button.disabled = false;
+  }
+});
+
 document.querySelectorAll("button[data-action]").forEach(button => {
   button.addEventListener("click", async () => {
-    const { action, camera } = button.dataset;
-    if (!confirm(`${action[0].toUpperCase() + action.slice(1)} ${camera === "all" ? "all cameras" : camera + " camera"}?`)) return;
+    const { action } = button.dataset;
+    const camera = document.querySelector("#control-camera").value;
+    const target = camera === "all" ? "all active cameras" : `${camera} camera`;
+    if (!confirm(`${action[0].toUpperCase() + action.slice(1)} recording for ${target}? Controls will lock afterward.`)) return;
     button.disabled = true;
     try {
       const response = await fetch("/api/control", {
