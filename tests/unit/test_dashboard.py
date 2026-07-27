@@ -17,7 +17,9 @@ def test_dashboard_and_planned_camera_render(tmp_path: Path) -> None:
     client = app.test_client()
     response = client.get("/")
     assert response.status_code == 200
-    assert b"Today\xe2\x80\x99s recordings" in response.data
+    assert b">Recordings</a>" in response.data
+    assert b"Control Panel" in response.data
+    assert response.data.count(b"data-action=") == 3
     assert b"Camera planned" in response.data
 
 
@@ -25,6 +27,46 @@ def test_control_rejects_unknown_action(tmp_path: Path) -> None:
     app = create_app(config_from_mapping(valid_mapping(tmp_path)))
     response = app.test_client().post("/api/control", json={"action": "delete"})
     assert response.status_code == 400
+
+
+def test_control_lock_endpoint_forwards_lock_action(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = config_from_mapping(valid_mapping(tmp_path))
+    actions: list[tuple[str, str | None]] = []
+
+    def fake_send_command(_config, action: str, camera: str | None):
+        actions.append((action, camera))
+        return {"ok": True, "action": action}
+
+    monkeypatch.setattr("app.dashboard.server.send_command", fake_send_command)
+    response = create_app(config).test_client().post(
+        "/api/control-lock",
+        json={"action": "unlock"},
+    )
+
+    assert response.status_code == 200
+    assert actions == [("unlock", None)]
+
+
+def test_control_returns_locked_status(tmp_path: Path, monkeypatch) -> None:
+    config = config_from_mapping(valid_mapping(tmp_path))
+    monkeypatch.setattr(
+        "app.dashboard.server.send_command",
+        lambda *_args: {
+            "ok": False,
+            "code": "controls_locked",
+            "error": "capture controls are locked",
+        },
+    )
+
+    response = create_app(config).test_client().post(
+        "/api/control",
+        json={"action": "pause", "camera": "water"},
+    )
+
+    assert response.status_code == 423
 
 
 def test_download_rejects_path_traversal(tmp_path: Path) -> None:

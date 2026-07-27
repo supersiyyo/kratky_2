@@ -14,21 +14,46 @@
       <h1>Kratky monitor</h1>
     </div>
     <div class="header-actions">
-      <a class="button ghost" href="{{ url_for('recordings') }}">Today’s recordings</a>
+      <a class="button primary recordings-button" href="{{ url_for('recordings') }}">Recordings</a>
       <span id="version" class="version">Version —</span>
     </div>
   </header>
 
   <main>
-    <section class="global-bar panel">
-      <div>
-        <h2>Capture controls</h2>
-        <p>Actions affect finalized MKV segments; the manager stays online.</p>
+    <section class="control-panel panel">
+      <div class="control-panel-heading">
+        <div>
+          <p class="eyebrow">Recording management</p>
+          <h2>Control Panel</h2>
+          <p>Unlock this panel before changing a recording. It locks again after an action or 60 seconds.</p>
+        </div>
+        <div class="lock-actions">
+          <span id="control-lock-status" class="status warning">LOCKED</span>
+          <button id="control-lock-toggle" type="button">Unlock controls</button>
+        </div>
       </div>
-      <div class="controls">
-        <button data-action="pause" data-camera="all">Pause all</button>
-        <button data-action="resume" data-camera="all">Resume all</button>
-        <button class="danger" data-action="restart" data-camera="all">Restart all recordings</button>
+      <div class="control-panel-body">
+        <div class="control-actions">
+          <label for="control-camera">Camera target</label>
+          <select id="control-camera">
+            <option value="all">All active cameras</option>
+            {% for name, camera in config.cameras.items() if camera.enabled %}
+            <option value="{{ name }}">{{ name|capitalize }} camera</option>
+            {% endfor %}
+          </select>
+          <div class="controls">
+            <button data-action="pause" disabled>Pause recording</button>
+            <button data-action="resume" disabled>Resume recording</button>
+            <button class="danger" data-action="restart" disabled>Restart recording</button>
+          </div>
+          <p id="control-lock-expiry" class="control-note">Controls are protected from accidental changes.</p>
+        </div>
+        <div class="lock-log">
+          <h3>Lock activity</h3>
+          <ol id="control-lock-history" class="lock-events">
+            <li>Waiting for control status…</li>
+          </ol>
+        </div>
       </div>
     </section>
 
@@ -62,11 +87,6 @@
         </dl>
         <div class="sensor-values" data-sensors="{{ name }}"></div>
         <p class="error" data-field="last_error"></p>
-        <div class="controls">
-          <button data-action="pause" data-camera="{{ name }}">Pause</button>
-          <button data-action="resume" data-camera="{{ name }}">Resume</button>
-          <button class="danger" data-action="restart" data-camera="{{ name }}">Restart recording</button>
-        </div>
       </article>
       {% endfor %}
     </section>
