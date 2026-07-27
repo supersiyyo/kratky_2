@@ -8,9 +8,11 @@ import threading
 from datetime import datetime
 from pathlib import Path
 from typing import BinaryIO, Callable
+from zoneinfo import ZoneInfo
 
 from app.capture.ffmpeg import build_capture_command, build_recorder_command
-from app.capture.recordings import next_hour, recording_path
+from app.capture.recordings import next_hour, recording_path, timing_path
+from app.capture.state import atomic_write_json
 from app.common.config import AppConfig, CameraConfig
 from app.common.models import CameraRuntime, CameraStatus
 from app.common.paths import preview_path
@@ -32,6 +34,7 @@ class CameraWorker:
         self.name = name
         self.camera = camera
         self.config = config
+        self.timezone = ZoneInfo(config.deployment.timezone)
         self.process_factory = process_factory
         self.capture_process: subprocess.Popen[bytes] | None = None
         self.recording_process: subprocess.Popen[bytes] | None = None
@@ -47,6 +50,9 @@ class CameraWorker:
         self._reader_stop = threading.Event()
         self._recorder_lock = threading.Lock()
         self._frame_size = 0
+        self._recording_first_frame_at: str | None = None
+        self._recording_last_frame_at: str | None = None
+        self._recording_frame_count = 0
         self.runtime = CameraRuntime(
             name=name,
             status=CameraStatus.STARTING if camera.enabled else CameraStatus.PLANNED,
@@ -118,8 +124,11 @@ class CameraWorker:
             self._recording_failed(now, "recorder did not expose its frame pipe")
             return
         with self._recorder_lock:
+            self.current_recording = recording
+            self._recording_first_frame_at = None
+            self._recording_last_frame_at = None
+            self._recording_frame_count = 0
             self.recording_process = process
-        self.current_recording = recording
         self.rollover_at = next_hour(now)
         self.runtime.status = CameraStatus.STARTING
         self.runtime.current_recording = str(recording)
@@ -150,6 +159,7 @@ class CameraWorker:
             frame = self._read_frame(stream)
             if frame is None:
                 return
+            frame_at = datetime.now(self.timezone).isoformat()
             with self._recorder_lock:
                 process = self.recording_process
                 target = process.stdin if process is not None else None
@@ -157,6 +167,10 @@ class CameraWorker:
                     continue
                 try:
                     self._write_frame(target, frame)
+                    if self._recording_first_frame_at is None:
+                        self._recording_first_frame_at = frame_at
+                    self._recording_last_frame_at = frame_at
+                    self._recording_frame_count += 1
                 except (BrokenPipeError, OSError):
                     LOGGER.warning("%s recorder frame pipe closed", self.name)
 
@@ -180,7 +194,15 @@ class CameraWorker:
     def stop_recording(self) -> None:
         with self._recorder_lock:
             process = self.recording_process
+            recording = self.current_recording
+            first_frame_at = self._recording_first_frame_at
+            last_frame_at = self._recording_last_frame_at
+            frame_count = self._recording_frame_count
             self.recording_process = None
+            self.current_recording = None
+            self._recording_first_frame_at = None
+            self._recording_last_frame_at = None
+            self._recording_frame_count = 0
             if process is not None and process.stdin is not None:
                 try:
                     process.stdin.close()
@@ -191,7 +213,16 @@ class CameraWorker:
                 process,
                 self.config.runtime.shutdown_timeout_seconds,
             )
-        self.current_recording = None
+        if recording is not None and first_frame_at and last_frame_at:
+            atomic_write_json(
+                timing_path(recording),
+                {
+                    "camera": self.name,
+                    "first_frame_at": first_frame_at,
+                    "last_frame_at": last_frame_at,
+                    "frame_count": frame_count,
+                },
+            )
         self.rollover_at = None
         self.runtime.current_recording = None
 

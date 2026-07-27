@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 import re
 from dataclasses import dataclass
 from datetime import datetime, timedelta
@@ -58,6 +59,28 @@ def parse_start(path: Path, timezone: ZoneInfo) -> datetime | None:
     ).replace(tzinfo=timezone)
 
 
+def timing_path(recording: Path) -> Path:
+    return recording.with_suffix(".timing.json")
+
+
+def recording_timing(
+    recording: Path,
+    timezone: ZoneInfo,
+) -> tuple[datetime, datetime, bool] | None:
+    fallback_start = parse_start(recording, timezone)
+    if fallback_start is None:
+        return None
+    fallback_end = datetime.fromtimestamp(recording.stat().st_mtime, timezone)
+    try:
+        with timing_path(recording).open("r", encoding="utf-8") as handle:
+            timing = json.load(handle)
+        first = datetime.fromisoformat(str(timing["first_frame_at"]))
+        last = datetime.fromisoformat(str(timing["last_frame_at"]))
+    except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError):
+        return fallback_start, fallback_end, True
+    return first, last, False
+
+
 def list_recordings(
     root: Path,
     timezone: ZoneInfo,
@@ -72,10 +95,10 @@ def list_recordings(
     for path in directory.glob("*/*.mkv"):
         if path.resolve() in active:
             continue
-        start = parse_start(path, timezone)
-        if start is None:
+        timing = recording_timing(path, timezone)
+        if timing is None:
             continue
+        start, end, _approximate = timing
         stat = path.stat()
-        end = datetime.fromtimestamp(stat.st_mtime, timezone)
         items.append(Recording(path.parent.name, path, start, end, stat.st_size))
     return sorted(items, key=lambda item: (item.start, item.camera))

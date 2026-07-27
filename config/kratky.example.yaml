@@ -22,7 +22,7 @@ dashboard:
 sensors:
   enabled: true
   interval_seconds: 1
-  history_interval_seconds: 60
+  history_interval_seconds: 1
   modbus_device: /dev/ttyUSB0
   modbus_slave: 1
 

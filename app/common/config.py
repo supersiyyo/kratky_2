@@ -62,7 +62,7 @@ class DashboardConfig:
 class SensorConfig:
     enabled: bool = True
     interval_seconds: float = 1.0
-    history_interval_seconds: float = 60.0
+    history_interval_seconds: float = 1.0
     modbus_device: str = "/dev/ttyUSB0"
     modbus_slave: int = 1
 

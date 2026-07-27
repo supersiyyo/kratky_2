@@ -57,6 +57,14 @@ A reconnect or manual restart creates a new timestamped file and never
 overwrites an earlier segment. Active files are excluded from downloads,
 retention deletion, and the completed-recordings list.
 
+Each finalized recording also receives a small `.timing.json` file containing
+its actual first- and last-frame timestamps. The sensor service writes one
+timestamped row per second to daily files under `/var/lib/kratky/sensors/`.
+The archive browser's `Review` page uses the video's playback position and
+first-frame timestamp to show the corresponding water and environment readings.
+Older recordings fall back to filename timing and the available one-minute
+sensor history.
+
 ## Local development
 
 Python 3.11 or newer is recommended.

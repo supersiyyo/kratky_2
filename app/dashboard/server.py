@@ -2,14 +2,14 @@ from __future__ import annotations
 
 import json
 import socket
-from datetime import datetime
+from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from flask import Flask, abort, jsonify, render_template, request, send_file
 
-from app.capture.recordings import list_recordings
+from app.capture.recordings import list_recordings, recording_timing
 from app.capture.state import read_json
 from app.common.config import AppConfig, load_config
 from app.common.paths import (
@@ -18,6 +18,7 @@ from app.common.paths import (
     preview_path,
     sensor_state_path,
 )
+from app.sensors.history import load_history
 
 
 def _active_paths(capture: dict[str, Any]) -> set[Path]:
@@ -150,6 +151,39 @@ def create_app(config: AppConfig | None = None) -> Flask:
         if not path.is_file() or path.suffix.lower() != ".mkv":
             abort(404)
         return send_file(path, mimetype="video/x-matroska", conditional=True)
+
+    @app.get("/recordings/review/<path:relative>")
+    def recording_review(relative: str):  # type: ignore[no-untyped-def]
+        root = app_config.storage.root.resolve()
+        path = (root / relative).resolve()
+        try:
+            path.relative_to(root)
+        except ValueError:
+            abort(404)
+        capture = status_payload()["capture"]
+        if path in {item.resolve() for item in _active_paths(capture)}:
+            abort(409, "recording is still active")
+        if not path.is_file() or path.suffix.lower() != ".mkv":
+            abort(404)
+        timing = recording_timing(path, timezone)
+        if timing is None:
+            abort(404)
+        first_frame_at, last_frame_at, approximate = timing
+        samples = load_history(
+            app_config.runtime.sensor_dir,
+            first_frame_at - timedelta(seconds=1),
+            last_frame_at + timedelta(seconds=1),
+        )
+        return render_template(
+            "review.html",
+            filename=path.name,
+            relative=path.relative_to(root).as_posix(),
+            first_frame_at=first_frame_at.isoformat(),
+            last_frame_at=last_frame_at.isoformat(),
+            timezone=app_config.deployment.timezone,
+            approximate=approximate,
+            samples=samples,
+        )
 
     return app
 

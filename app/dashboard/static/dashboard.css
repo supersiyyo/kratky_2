@@ -61,11 +61,22 @@ button.danger:hover { border-color: var(--red); color: var(--red); }
 .recording-row small { display: block; margin-top: 4px; color: var(--muted); }
 .recording-row small.gap { color: var(--amber); }
 .recording-row.active { background: rgba(126,215,166,.04); }
+.recording-actions { display: flex; flex-wrap: wrap; gap: 8px; justify-content: flex-end; }
+.review-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(300px, .7fr); gap: 18px; }
+.review-video-panel, .review-data { padding: 20px; }
+.review-video-panel video { display: block; width: 100%; max-height: 72vh; border-radius: 12px; background: #000; }
+.recorded-clock { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 14px; }
+.recorded-clock span, .review-note { color: var(--muted); }
+.recorded-clock strong { font-family: ui-monospace, monospace; }
+.review-note { margin: 12px 0 0; color: var(--amber); }
+.review-data h3 { margin-top: 20px; }
 .empty, .planned-line { padding: 12px 0; }
 #toast { position: fixed; right: 18px; bottom: 18px; max-width: 360px; padding: 12px 16px; border-radius: 10px; background: #24382f; box-shadow: 0 10px 30px #0008; opacity: 0; transform: translateY(10px); transition: .2s; pointer-events: none; }
 #toast.show { opacity: 1; transform: none; }
 @media (max-width: 760px) {
   header, .global-bar, .card-heading { align-items: flex-start; flex-direction: column; }
   .camera-grid, .lower-grid { grid-template-columns: 1fr; }
+  .review-grid { grid-template-columns: 1fr; }
   .recording-row { grid-template-columns: 1fr; }
+  .recording-actions { justify-content: flex-start; }
 }
