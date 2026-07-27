@@ -37,7 +37,10 @@
             {% if item.restart_boundary %}<small>Restart boundary</small>{% endif %}
           </span>
           <span>{{ (item.size / 1048576)|round(1) }} MiB</span>
-          <a class="button ghost" href="{{ url_for('recording_file', relative=item.path) }}">Open / download</a>
+          <span class="recording-actions">
+            <a class="button" href="{{ url_for('recording_review', relative=item.path) }}">Review</a>
+            <a class="button ghost" href="{{ url_for('recording_file', relative=item.path) }}">Open / download</a>
+          </span>
         </div>
         {% else %}
           {% if camera.enabled %}<p class="empty">No completed recordings yet.</p>{% endif %}

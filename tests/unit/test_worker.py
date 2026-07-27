@@ -6,6 +6,8 @@ from pathlib import Path
 from zoneinfo import ZoneInfo
 
 from app.capture.worker import CameraWorker
+from app.capture.recordings import timing_path
+from app.capture.state import read_json
 from app.common.config import config_from_mapping
 from app.common.models import CameraStatus
 from tests.unit.test_config import valid_mapping
@@ -97,3 +99,24 @@ def test_manual_recording_restart_keeps_camera_open(tmp_path: Path) -> None:
     assert recorder.waited
     assert worker.recording_process is None
     assert worker.runtime.status is CameraStatus.STARTING
+
+
+def test_finalized_recording_has_first_frame_timing(tmp_path: Path) -> None:
+    worker = worker_for(tmp_path)
+    recorder = FakeProcess()
+    recording = tmp_path / "water-test.mkv"
+    recording.write_bytes(b"video")
+    worker.recording_process = recorder  # type: ignore[assignment]
+    worker.current_recording = recording
+    worker._recording_first_frame_at = "2026-07-26T08:34:17-07:00"
+    worker._recording_last_frame_at = "2026-07-26T08:34:19-07:00"
+    worker._recording_frame_count = 3
+
+    worker.stop_recording()
+
+    assert read_json(timing_path(recording), {}) == {
+        "camera": "water",
+        "first_frame_at": "2026-07-26T08:34:17-07:00",
+        "last_frame_at": "2026-07-26T08:34:19-07:00",
+        "frame_count": 3,
+    }

@@ -1,0 +1,52 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Review {{ filename }} · Kratky monitor</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+  <script defer src="{{ url_for('static', filename='review.js') }}"></script>
+</head>
+<body>
+  <header>
+    <div>
+      <p class="eyebrow">Recording review</p>
+      <h1>{{ filename }}</h1>
+    </div>
+    <a class="button ghost" href="{{ url_for('recordings', day=first_frame_at[:10]) }}">Back to recordings</a>
+  </header>
+  <main>
+    <section class="review-grid">
+      <article class="panel review-video-panel">
+        <video id="review-video" controls preload="metadata"
+          src="{{ url_for('recording_file', relative=relative) }}"></video>
+        <div class="recorded-clock">
+          <span>Recorded time</span>
+          <strong id="recorded-time">—</strong>
+        </div>
+        {% if approximate %}
+        <p class="review-note">This older recording uses approximate timing and the available one-minute sensor history.</p>
+        {% endif %}
+      </article>
+      <aside class="panel review-data">
+        <div class="card-heading">
+          <h2>Sensor readings</h2>
+          <span id="sensor-status" class="status neutral">WAITING</span>
+        </div>
+        <p id="sensor-time">Start the video to view recorded readings.</p>
+        <h3>Environment</h3>
+        <div id="review-environment" class="sensor-values"></div>
+        <h3>Water</h3>
+        <div id="review-water" class="sensor-values"></div>
+      </aside>
+    </section>
+  </main>
+  <script id="review-data" type="application/json">{{ {
+    "first_frame_at": first_frame_at,
+    "last_frame_at": last_frame_at,
+    "timezone": timezone,
+    "approximate": approximate,
+    "samples": samples
+  }|tojson }}</script>
+</body>
+</html>

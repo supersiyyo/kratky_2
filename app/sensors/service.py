@@ -1,17 +1,16 @@
 from __future__ import annotations
 
-import csv
 import logging
 import signal
 import time
 from datetime import datetime
-from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.capture.state import atomic_write_json
 from app.common.config import AppConfig, load_config
 from app.common.paths import ensure_runtime_directories, sensor_state_path
+from app.sensors.history import append_history, daily_history_path
 from app.sensors.state import SensorSection, SensorSnapshot
 
 LOGGER = logging.getLogger("kratky.sensors")
@@ -194,21 +193,6 @@ class SensorHardware:
         )
 
 
-def append_history(path: Path, snapshot: SensorSnapshot) -> None:
-    path.parent.mkdir(parents=True, exist_ok=True)
-    values = {
-        "timestamp": snapshot.updated_at,
-        **{f"environment_{key}": value for key, value in snapshot.environment.values.items()},
-        **{f"water_{key}": value for key, value in snapshot.water.values.items()},
-    }
-    exists = path.exists()
-    with path.open("a", encoding="utf-8", newline="") as handle:
-        writer = csv.DictWriter(handle, fieldnames=list(values))
-        if not exists:
-            writer.writeheader()
-        writer.writerow(values)
-
-
 class SensorService:
     def __init__(self, config: AppConfig, hardware: SensorHardware | None = None):
         self.config = config
@@ -222,7 +206,7 @@ class SensorService:
         snapshot = self.hardware.read(now)
         atomic_write_json(sensor_state_path(self.config), snapshot.to_dict())
         if time.monotonic() - self.last_history >= self.config.sensors.history_interval_seconds:
-            history_path = self.config.runtime.sensor_dir / f"sensors-{now:%Y-%m}.csv"
+            history_path = daily_history_path(self.config.runtime.sensor_dir, now)
             append_history(history_path, snapshot)
             self.last_history = time.monotonic()
         return snapshot
