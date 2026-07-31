@@ -135,7 +135,11 @@ def validate_secrets(
     tailscale_key = _string(
         tailscale, "auth_key", "tailscale", secret=True
     )
-    if not tailscale_key.startswith("tskey-"):
+    if tailscale_key.startswith("tskey-auth-tskey-auth-"):
+        raise ProvisioningError(
+            "tailscale.auth_key contains the tskey-auth prefix twice"
+        )
+    if not tailscale_key.startswith("tskey-auth-"):
         raise ProvisioningError("tailscale.auth_key must be a Tailscale auth key")
     tailscale_hostname = _string(tailscale, "hostname", "tailscale")
     if not _HOSTNAME.fullmatch(tailscale_hostname):

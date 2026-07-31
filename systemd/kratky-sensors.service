@@ -1,7 +1,7 @@
 [Unit]
 Description=Kratky sensor collector
-After=local-fs.target dev-i2c\x2d1.device kratky-capture.service
-Wants=dev-i2c\x2d1.device kratky-capture.service
+After=local-fs.target kratky-capture.service
+Wants=kratky-capture.service
 StartLimitIntervalSec=300
 StartLimitBurst=5
 
