@@ -8,7 +8,7 @@ fi
 
 REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_DIR}"
-APP_USER="${KRATKY_USER:-kratky}"
+APP_USER="${KRATKY_USER:-$(stat -c '%U' "${REPO_DIR}")}"
 CONFIG_DIR="/etc/kratky"
 CONFIG_PATH="${CONFIG_DIR}/config.yaml"
 DATA_DIR="/var/lib/kratky"
@@ -18,6 +18,7 @@ if ! id "${APP_USER}" >/dev/null 2>&1; then
   echo "Required user does not exist: ${APP_USER}" >&2
   exit 1
 fi
+APP_GROUP="${KRATKY_GROUP:-$(id -gn "${APP_USER}")}"
 
 apt-get update
 DEBIAN_FRONTEND=noninteractive apt-get install -y \
@@ -25,13 +26,13 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
   python3-venv time v4l-utils
 
 usermod -a -G video,dialout,i2c,gpio "${APP_USER}"
-install -d -o root -g "${APP_USER}" -m 0750 "${CONFIG_DIR}"
-install -d -o "${APP_USER}" -g "${APP_USER}" -m 0750 \
+install -d -o root -g "${APP_GROUP}" -m 0750 "${CONFIG_DIR}"
+install -d -o "${APP_USER}" -g "${APP_GROUP}" -m 0750 \
   "${DATA_DIR}/recordings" "${DATA_DIR}/state" \
   "${DATA_DIR}/sensors" "${RUN_DIR}"
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then
-  install -o root -g "${APP_USER}" -m 0640 \
+  install -o root -g "${APP_GROUP}" -m 0640 \
     "${REPO_DIR}/config/kratky.example.yaml" "${CONFIG_PATH}"
   echo "Created ${CONFIG_PATH}; review it before recording."
 else
@@ -43,10 +44,19 @@ if [[ ! -x "${REPO_DIR}/.venv/bin/python" ]]; then
 fi
 "${REPO_DIR}/.venv/bin/python" -m pip install --upgrade pip
 "${REPO_DIR}/.venv/bin/python" -m pip install -r "${REPO_DIR}/requirements.lock"
-chown -R "${APP_USER}:${APP_USER}" "${REPO_DIR}/.venv"
+chown -R "${APP_USER}:${APP_GROUP}" "${REPO_DIR}/.venv"
 
+UNIT_RENDER_DIR="$(mktemp -d)"
+cleanup() {
+  rm -rf -- "${UNIT_RENDER_DIR}"
+}
+trap cleanup EXIT
 for unit in kratky-capture.service kratky-dashboard.service kratky-sensors.service; do
-  install -o root -g root -m 0644 "${REPO_DIR}/systemd/${unit}" "/etc/systemd/system/${unit}"
+  python3 "${REPO_DIR}/scripts/render-systemd-unit.py" \
+    "${REPO_DIR}/systemd/${unit}" "${UNIT_RENDER_DIR}/${unit}" \
+    --user "${APP_USER}" --group "${APP_GROUP}" --repo-dir "${REPO_DIR}"
+  install -o root -g root -m 0644 \
+    "${UNIT_RENDER_DIR}/${unit}" "/etc/systemd/system/${unit}"
 done
 
 systemctl daemon-reload
@@ -57,4 +67,4 @@ systemctl enable kratky-capture.service kratky-dashboard.service kratky-sensors.
   || { echo "Configuration is invalid; services were not started." >&2; exit 1; }
 
 systemctl restart kratky-capture.service kratky-dashboard.service kratky-sensors.service
-"${REPO_DIR}/scripts/verify-installation.sh"
+KRATKY_USER="${APP_USER}" "${REPO_DIR}/scripts/verify-installation.sh"

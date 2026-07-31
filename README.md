@@ -116,6 +116,73 @@ sudo ./scripts/apply-update.sh
 fast tests, updates changed units, restarts services gracefully, and verifies
 health.
 
+## Reproduce the complete Pi
+
+The complete provisioner configures the host as well as Kratky Monitor:
+
+- X11/Openbox with desktop autologin;
+- TigerVNC desktop sharing bound only to the Pi's Tailscale IPv4 address;
+- non-interactive Tailscale enrollment;
+- both stable camera paths;
+- the Kratky application, services, and post-reboot health checks.
+
+Use Raspberry Pi Imager to write Raspberry Pi OS Desktop and preconfigure the
+user, Wi-Fi, and SSH. Keep the real secrets file on the provisioning computer;
+never place it on the FAT `bootfs` partition.
+
+Create a private input file from the committed template:
+
+```bash
+cp config/provisioning-secrets.example.json provisioning-secrets.json
+```
+
+Fill in the Pi login password, a dedicated eight-character VNC password, and a one-off,
+pre-approved, non-ephemeral Tailscale auth key. Confirm the local first-boot
+address and the two `/dev/v4l/by-id/...-video-index0` camera paths. The real
+filename and `*.secrets.json` are ignored by Git.
+
+On the provisioning computer:
+
+```bash
+python -m venv .provision-venv
+. .provision-venv/bin/activate
+python -m pip install -r requirements-provision.txt
+python scripts/provision.py provisioning-secrets.json
+```
+
+On Windows PowerShell, activate with:
+
+```powershell
+.\.provision-venv\Scripts\Activate.ps1
+python -m pip install -r requirements-provision.txt
+python scripts\provision.py provisioning-secrets.json
+```
+
+The local provisioner:
+
+1. connects to the fresh Pi over the local network;
+2. installs Git and clones or fast-forwards this repository;
+3. uploads a reduced payload that excludes the SSH password to `/dev/shm`;
+4. installs X11, TigerVNC, Tailscale, and Kratky;
+5. deletes the transient Pi-side payload;
+6. reboots into X11 and verifies Tailscale, VNC, both cameras, and all services.
+
+`target.allow_unknown_host_key` is intended only for the first connection to a
+freshly imaged Pi on a trusted local network. Set it to `false` after the new
+host key is known. Re-running the provisioner preserves an already enrolled
+Tailscale node identity and the persistent Kratky data directories.
+
+For a host-local recovery, securely transfer a reduced secrets file to a
+root-readable path and run:
+
+```bash
+sudo python3 scripts/provision-host.py /path/to/secrets.json --delete-secrets
+```
+
+This project deliberately selects X11 because `x0vncserver` shares the active
+physical desktop. Raspberry Pi OS currently recommends Wayland generally; the
+choice here is an explicit project compatibility decision.
+
 ## Configuration
 
 Start from [`config/kratky.example.yaml`](config/kratky.example.yaml). Runtime

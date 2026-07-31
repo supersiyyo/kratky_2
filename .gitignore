@@ -6,8 +6,13 @@ __pycache__/
 .coverage
 htmlcov/
 .venv/
+.provision-venv/
 venv/
 .env
+KEY.json
+key.json
+provisioning-secrets.json
+*.secrets.json
 *.log
 *.mkv
 *.jpg
