@@ -163,7 +163,7 @@ The local provisioner:
 1. connects to the fresh Pi over the local network;
 2. installs Git and clones or fast-forwards this repository;
 3. uploads a reduced payload that excludes the SSH password to `/dev/shm`;
-4. installs X11, TigerVNC, Tailscale, and Kratky;
+4. enables GPIO I2C and installs X11, TigerVNC, Tailscale, and Kratky;
 5. deletes the transient Pi-side payload;
 6. reboots into X11 and verifies Tailscale, VNC, both cameras, and all services.
 
