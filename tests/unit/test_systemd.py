@@ -8,6 +8,8 @@ def test_sensor_service_uses_writable_working_directory() -> None:
 
     assert "WorkingDirectory=/run/kratky" in unit
     assert "Environment=PYTHONPATH=/home/kratky/kratky-monitor" in unit
+    assert "dev-i2c" not in unit
+    assert "After=local-fs.target kratky-capture.service" in unit
 
 
 def test_installation_verification_retries_dashboard_startup() -> None:

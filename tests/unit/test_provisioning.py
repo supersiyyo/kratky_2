@@ -94,6 +94,14 @@ def test_rejects_placeholder_secrets() -> None:
         validate_secrets(raw)
 
 
+def test_rejects_a_duplicated_tailscale_auth_key_prefix() -> None:
+    raw = valid_secrets()
+    raw["tailscale"]["auth_key"] = "tskey-auth-tskey-auth-test-only"
+
+    with pytest.raises(ProvisioningError, match="prefix twice"):
+        validate_secrets(raw)
+
+
 def test_rejects_duplicate_camera_paths() -> None:
     raw = valid_secrets()
     raw["kratky"]["environment_camera"]["device"] = raw["kratky"][
