@@ -169,7 +169,7 @@ def configure_vnc(secrets: dict[str, Any], user: pwd.struct_passwd) -> None:
 
     result = run(
         "creating the TigerVNC password file",
-        ["vncpasswd", "-f"],
+        ["tigervncpasswd", "-f"],
         input_bytes=(vnc["password"] + "\n").encode("utf-8"),
         capture_output=True,
     )

@@ -176,3 +176,12 @@ def test_vnc_launcher_waits_for_tailscale_and_binds_its_address() -> None:
     assert "X0tigervnc" in launcher
     assert "-localhost=0" in launcher
     assert "-SecurityTypes VncAuth" in launcher
+
+
+def test_host_provisioner_uses_the_tigervnc_password_binary() -> None:
+    provisioner = (ROOT / "scripts/provision-host.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '["tigervncpasswd", "-f"]' in provisioner
+    assert '["vncpasswd", "-f"]' not in provisioner
