@@ -5,6 +5,7 @@ REPO_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 cd "${REPO_DIR}"
 CONFIG_PATH="${KRATKY_CONFIG:-/etc/kratky/config.yaml}"
 PYTHON="${REPO_DIR}/.venv/bin/python"
+APP_USER="${KRATKY_USER:-$(stat -c '%U' "${REPO_DIR}")}"
 failures=0
 
 check() {
@@ -43,8 +44,8 @@ check "virtual environment" test -x "${PYTHON}"
 check "configuration readable" test -r "${CONFIG_PATH}"
 check "configuration valid" "${PYTHON}" -c \
   "from app.common.config import load_config; load_config('${CONFIG_PATH}')"
-check "recordings writable" runuser -u kratky -- test -w /var/lib/kratky/recordings
-check "runtime writable" runuser -u kratky -- test -w /run/kratky
+check "recordings writable" runuser -u "${APP_USER}" -- test -w /var/lib/kratky/recordings
+check "runtime writable" runuser -u "${APP_USER}" -- test -w /run/kratky
 check "capture service active" systemctl is-active --quiet kratky-capture.service
 check "dashboard service active" systemctl is-active --quiet kratky-dashboard.service
 check "sensor service active" systemctl is-active --quiet kratky-sensors.service
