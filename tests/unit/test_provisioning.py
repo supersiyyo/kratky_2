@@ -193,3 +193,11 @@ def test_host_provisioner_uses_the_tigervnc_password_binary() -> None:
 
     assert '["tigervncpasswd", "-f"]' in provisioner
     assert '["vncpasswd", "-f"]' not in provisioner
+
+
+def test_host_provisioner_enables_gpio_i2c() -> None:
+    provisioner = (ROOT / "scripts/provision-host.py").read_text(
+        encoding="utf-8"
+    )
+
+    assert '["raspi-config", "nonint", "do_i2c", "0"]' in provisioner

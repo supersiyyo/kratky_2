@@ -129,6 +129,10 @@ def install_tailscale() -> None:
 
 def configure_desktop(secrets: dict[str, Any], username: str) -> None:
     run(
+        "enabling GPIO I2C for the environmental sensors",
+        ["raspi-config", "nonint", "do_i2c", "0"],
+    )
+    run(
         "setting the Raspberry Pi hostname",
         ["raspi-config", "nonint", "do_hostname", secrets["system"]["hostname"]],
     )
