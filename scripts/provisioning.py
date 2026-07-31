@@ -10,6 +10,17 @@ class ProvisioningError(ValueError):
     """Raised when provisioning input is incomplete or unsafe."""
 
 
+def write_remote_output(stream: Any, payload: bytes) -> None:
+    """Write UTF-8 remote output without failing on a legacy local console."""
+    text = payload.decode("utf-8", errors="replace")
+    encoding = getattr(stream, "encoding", None) or "utf-8"
+    safe_text = text.encode(encoding, errors="replace").decode(
+        encoding, errors="replace"
+    )
+    stream.write(safe_text)
+    stream.flush()
+
+
 _USERNAME = re.compile(r"^[a-z_][a-z0-9_-]{0,31}$")
 _HOSTNAME = re.compile(
     r"^(?=.{1,63}$)(?!-)[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?$"

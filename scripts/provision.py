@@ -10,7 +10,12 @@ import uuid
 from pathlib import Path
 from typing import Any
 
-from provisioning import ProvisioningError, load_secrets, remote_payload
+from provisioning import (
+    ProvisioningError,
+    load_secrets,
+    remote_payload,
+    write_remote_output,
+)
 
 
 def connect(paramiko: Any, secrets: dict[str, Any]) -> Any:
@@ -54,14 +59,10 @@ def run_remote(
         while True:
             emitted = False
             if channel.recv_ready():
-                sys.stdout.write(channel.recv(65536).decode("utf-8", errors="replace"))
-                sys.stdout.flush()
+                write_remote_output(sys.stdout, channel.recv(65536))
                 emitted = True
             if channel.recv_stderr_ready():
-                sys.stderr.write(
-                    channel.recv_stderr(65536).decode("utf-8", errors="replace")
-                )
-                sys.stderr.flush()
+                write_remote_output(sys.stderr, channel.recv_stderr(65536))
                 emitted = True
             if (
                 channel.exit_status_ready()

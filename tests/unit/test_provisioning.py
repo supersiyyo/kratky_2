@@ -1,4 +1,5 @@
 import importlib.util
+import io
 import json
 from pathlib import Path
 
@@ -8,10 +9,21 @@ from scripts.provisioning import (
     ProvisioningError,
     remote_payload,
     validate_secrets,
+    write_remote_output,
 )
 
 
 ROOT = Path(__file__).parents[2]
+
+
+def test_remote_output_survives_a_legacy_windows_console() -> None:
+    raw = io.BytesIO()
+    stream = io.TextIOWrapper(raw, encoding="cp1252", newline="")
+
+    write_remote_output(stream, "route → ready\n".encode())
+    stream.flush()
+
+    assert raw.getvalue().decode("cp1252") == "route ? ready\n"
 
 
 def valid_secrets() -> dict:
