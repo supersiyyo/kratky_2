@@ -2,14 +2,32 @@ from __future__ import annotations
 
 import json
 import socket
+import threading
 from datetime import datetime, timedelta
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
-from flask import Flask, abort, jsonify, render_template, request, send_file
+from flask import (
+    Flask,
+    Response,
+    abort,
+    jsonify,
+    redirect,
+    render_template,
+    request,
+    send_file,
+    stream_with_context,
+    url_for,
+)
 
-from app.capture.recordings import list_recordings, recording_timing
+from app.capture.archive import stream_day_archive
+from app.capture.recordings import (
+    EXPECTED_CAMERAS,
+    list_recording_days,
+    recording_day,
+    recording_timing,
+)
 from app.capture.state import read_json
 from app.common.config import AppConfig, load_config
 from app.common.paths import (
@@ -52,6 +70,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
     app = Flask(__name__)
     app.config["KRATKY_CONFIG"] = app_config
     timezone = ZoneInfo(app_config.deployment.timezone)
+    archive_slot = threading.BoundedSemaphore(1)
 
     def status_payload() -> dict[str, Any]:
         capture = read_json(
@@ -130,13 +149,34 @@ def create_app(config: AppConfig | None = None) -> Flask:
 
     @app.get("/recordings")
     def recordings():  # type: ignore[no-untyped-def]
-        day = request.args.get("day") or datetime.now(timezone).strftime("%Y-%m-%d")
-        if len(day) != 10:
-            abort(400)
+        if selected_day := request.args.get("day"):
+            return redirect(url_for("recording_day_detail", day=selected_day))
         capture = status_payload()["capture"]
-        items = list_recordings(
-            app_config.storage.root, timezone, day, _active_paths(capture)
+        days = list_recording_days(
+            app_config.storage.root,
+            app_config.runtime.sensor_dir,
+            timezone,
+            _active_paths(capture),
         )
+        return render_template(
+            "recording_days.html",
+            days=days,
+            expected_cameras=EXPECTED_CAMERAS,
+        )
+
+    @app.get("/recordings/<day>")
+    def recording_day_detail(day: str):  # type: ignore[no-untyped-def]
+        capture = status_payload()["capture"]
+        selected = recording_day(
+            app_config.storage.root,
+            app_config.runtime.sensor_dir,
+            timezone,
+            day,
+            _active_paths(capture),
+        )
+        if selected is None:
+            abort(404)
+        items = selected.recordings
         item_dicts: list[dict[str, Any]] = []
         previous_end: dict[str, datetime] = {}
         for item in items:
@@ -157,11 +197,53 @@ def create_app(config: AppConfig | None = None) -> Flask:
         ]
         return render_template(
             "recordings.html",
-            day=day,
+            day=selected,
             recordings=item_dicts,
             active=active,
-            cameras=app_config.cameras,
+            expected_cameras=EXPECTED_CAMERAS,
         )
+
+    @app.get("/recordings/archive/<day>.zip")
+    def recording_day_archive(day: str):  # type: ignore[no-untyped-def]
+        capture = status_payload()["capture"]
+        selected = recording_day(
+            app_config.storage.root,
+            app_config.runtime.sensor_dir,
+            timezone,
+            day,
+            _active_paths(capture),
+        )
+        if selected is None or not selected.recordings:
+            abort(404)
+        if selected.has_active_recording:
+            abort(409, "the day still contains an active recording")
+        if not archive_slot.acquire(blocking=False):
+            abort(429, "another daily archive is already downloading")
+
+        stream = stream_day_archive(
+            selected,
+            app_config.storage.root,
+            app_config.runtime.sensor_dir,
+            app_config.deployment.timezone,
+            str(capture.get("version") or "unknown"),
+        )
+
+        def guarded_stream():  # type: ignore[no-untyped-def]
+            try:
+                yield from stream
+            finally:
+                archive_slot.release()
+
+        response = Response(
+            stream_with_context(guarded_stream()),
+            mimetype="application/zip",
+        )
+        response.headers["Content-Disposition"] = (
+            f'attachment; filename="kratky-{day}.zip"'
+        )
+        response.headers["Cache-Control"] = "no-store"
+        response.headers["X-Content-Type-Options"] = "nosniff"
+        return response
 
     @app.get("/recordings/file/<path:relative>")
     def recording_file(relative: str):  # type: ignore[no-untyped-def]
