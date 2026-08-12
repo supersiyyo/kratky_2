@@ -71,6 +71,7 @@ class SensorConfig:
 class OffloadConfig:
     enabled: bool = False
     oauth_client_id: str | None = None
+    oauth_client_secret: str | None = None
     auto_cleanup: bool = True
     interval_seconds: float = 30.0
     upload_chunk_mib: int = 8
@@ -170,8 +171,10 @@ def config_from_mapping(raw: dict[str, Any]) -> AppConfig:
     dashboard = DashboardConfig(**dashboard_raw)
     sensors = SensorConfig(**sensors_raw)
     offload = OffloadConfig(**offload_raw)
-    if offload.enabled and not offload.oauth_client_id:
-        raise ConfigError("offload.oauth_client_id is required when offload is enabled")
+    if bool(offload.oauth_client_id) != bool(offload.oauth_client_secret):
+        raise ConfigError(
+            "offload OAuth client ID and secret must be configured together"
+        )
     if offload.interval_seconds < 5:
         raise ConfigError("offload.interval_seconds must be at least 5")
     if offload.upload_chunk_mib < 1 or offload.upload_chunk_mib > 64:

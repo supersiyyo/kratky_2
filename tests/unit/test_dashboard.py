@@ -11,6 +11,9 @@ from app.capture.state import atomic_write_json
 from app.common.config import config_from_mapping
 from app.common.paths import capture_state_path
 from app.dashboard.server import create_app
+from app.offload.google_drive import DeviceAuthorization
+from app.offload.service import credential_path, ledger_path, pending_auth_path
+from app.offload.ledger import OffloadLedger
 from app.sensors.history import append_history, daily_history_path
 from tests.unit.test_sensor_history import snapshot
 from tests.unit.test_config import valid_mapping
@@ -40,6 +43,140 @@ def test_offload_page_explains_when_google_is_not_configured(tmp_path: Path) -> 
     assert status.status_code == 200
     assert status.get_json()["configured"] is False
     assert status.get_json()["connected"] is False
+    assert status.get_json()["service_enabled"] is False
+
+
+def test_administrator_can_upload_oauth_json_without_exposing_secret(
+    tmp_path: Path,
+) -> None:
+    config = config_from_mapping(valid_mapping(tmp_path))
+    client = create_app(config).test_client()
+    secret = "private-google-client-secret"
+    credentials = json.dumps(
+        {
+            "installed": {
+                "client_id": "1234567890-example.apps.googleusercontent.com",
+                "client_secret": secret,
+            }
+        }
+    ).encode()
+
+    response = client.post(
+        "/api/offload/credentials",
+        data={"credentials": (io.BytesIO(credentials), "oauth-client.json")},
+        content_type="multipart/form-data",
+    )
+    status = client.get("/api/offload/status")
+
+    assert response.status_code == 200
+    assert status.get_json()["configured"] is True
+    assert status.get_json()["service_enabled"] is False
+    assert secret not in status.get_data(as_text=True)
+    assert secret in credential_path(config).read_text(encoding="utf-8")
+
+
+def test_replacing_oauth_json_requires_confirmation(tmp_path: Path) -> None:
+    config = config_from_mapping(valid_mapping(tmp_path))
+    client = create_app(config).test_client()
+    payload = json.dumps(
+        {
+            "installed": {
+                "client_id": "first.apps.googleusercontent.com",
+                "client_secret": "first-secret",
+            }
+        }
+    ).encode()
+    assert client.post(
+        "/api/offload/credentials",
+        data={"credentials": (io.BytesIO(payload), "first.json")},
+        content_type="multipart/form-data",
+    ).status_code == 200
+
+    replacement = json.dumps(
+        {
+            "installed": {
+                "client_id": "second.apps.googleusercontent.com",
+                "client_secret": "second-secret",
+            }
+        }
+    ).encode()
+    denied = client.post(
+        "/api/offload/credentials",
+        data={"credentials": (io.BytesIO(replacement), "second.json")},
+        content_type="multipart/form-data",
+    )
+
+    assert denied.status_code == 409
+    assert "first-secret" in credential_path(config).read_text(encoding="utf-8")
+
+
+def test_preview_authorization_creates_project_folders_but_forces_cleanup_off(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = config_from_mapping(valid_mapping(tmp_path))
+    client = create_app(config).test_client()
+    credentials = json.dumps(
+        {
+            "installed": {
+                "client_id": "preview.apps.googleusercontent.com",
+                "client_secret": "preview-secret",
+            }
+        }
+    ).encode()
+    assert client.post(
+        "/api/offload/credentials",
+        data={"credentials": (io.BytesIO(credentials), "preview.json")},
+        content_type="multipart/form-data",
+    ).status_code == 200
+
+    class OAuth:
+        def start(self):
+            return DeviceAuthorization(
+                "device-code", "USER-CODE", "https://google.test/device", 1800, 5
+            )
+
+        def finish(self, _device_code):
+            return {"refresh_token": "refresh"}
+
+    class Drive:
+        def __init__(self):
+            self.created = []
+
+        def create_folder(self, name, parent_id=None):
+            self.created.append((name, parent_id))
+            identifier = f"folder-{len(self.created)}"
+            return {"id": identifier, "webViewLink": f"https://drive.test/{identifier}"}
+
+    drive = Drive()
+    monkeypatch.setattr(
+        "app.dashboard.server.build_google", lambda _config: (OAuth(), drive)
+    )
+
+    started = client.post(
+        "/api/offload/connect",
+        json={"project_name": "Lettuce Study", "auto_cleanup": True},
+    )
+    assert started.status_code == 200
+    assert started.get_json()["user_code"] == "USER-CODE"
+    assert json.loads(pending_auth_path(config).read_text(encoding="utf-8"))[
+        "auto_cleanup"
+    ] is False
+
+    completed = client.post("/api/offload/connect/status")
+    ledger = OffloadLedger(ledger_path(config))
+    assert completed.status_code == 200
+    assert [item[0] for item in drive.created] == [
+        "Lettuce Study",
+        "raw",
+        "timelapse-daily",
+        "final",
+    ]
+    assert ledger.setting("project_name") == "Lettuce Study"
+    assert ledger.setting("auto_cleanup") is False
+    cleanup = client.post("/api/offload/cleanup", json={"enabled": True})
+    assert cleanup.status_code == 409
+    assert ledger.setting("auto_cleanup") is False
 
 
 def test_control_rejects_unknown_action(tmp_path: Path) -> None:

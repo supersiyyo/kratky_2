@@ -15,7 +15,14 @@ from app.capture.recordings import list_recording_days
 from app.capture.state import atomic_write_json, read_json
 from app.common.config import AppConfig, load_config
 from app.common.paths import capture_state_path
-from app.offload.google_drive import GoogleDriveClient, GoogleDriveError, GoogleOAuth, TokenStore
+from app.offload.google_drive import (
+    CredentialStore,
+    GoogleDriveClient,
+    GoogleDriveError,
+    GoogleOAuth,
+    OAuthClientCredentials,
+    TokenStore,
+)
 from app.offload.ledger import OffloadLedger
 
 
@@ -31,6 +38,10 @@ def token_path(config: AppConfig) -> Path:
     return offload_directory(config) / "google-token.json"
 
 
+def credential_path(config: AppConfig) -> Path:
+    return offload_directory(config) / "google-oauth-client.json"
+
+
 def pending_auth_path(config: AppConfig) -> Path:
     return offload_directory(config) / "pending-authorization.json"
 
@@ -39,11 +50,23 @@ def offload_state_path(config: AppConfig) -> Path:
     return config.runtime.run_dir / "offload-state.json"
 
 
+def configured_credentials(config: AppConfig) -> OAuthClientCredentials | None:
+    stored = CredentialStore(credential_path(config)).load()
+    if stored:
+        return stored
+    if config.offload.oauth_client_id and config.offload.oauth_client_secret:
+        return OAuthClientCredentials(
+            config.offload.oauth_client_id,
+            config.offload.oauth_client_secret,
+        )
+    return None
+
+
 def build_google(config: AppConfig) -> tuple[GoogleOAuth, GoogleDriveClient]:
-    client_id = config.offload.oauth_client_id
-    if not client_id:
-        raise GoogleDriveError("Google OAuth client is not configured")
-    oauth = GoogleOAuth(client_id, TokenStore(token_path(config)))
+    credentials = configured_credentials(config)
+    if not credentials:
+        raise GoogleDriveError("Google OAuth application is not configured")
+    oauth = GoogleOAuth(credentials, TokenStore(token_path(config)))
     return oauth, GoogleDriveClient(oauth)
 
 
@@ -83,11 +106,16 @@ class OffloadService:
         self.directory.mkdir(parents=True, exist_ok=True)
         os.chmod(self.directory, 0o700)
         self.ledger = OffloadLedger(ledger_path(config))
-        self.oauth, self.drive = build_google(config)
+        self.oauth: GoogleOAuth | None = None
+        self.drive: GoogleDriveClient | None = None
+        self.credential_fingerprint: str | None = None
         self.running = True
         self.last_error: str | None = None
 
     def tick(self) -> None:
+        if not self._ensure_google():
+            self.write_state("NOT_CONFIGURED")
+            return
         if self.ledger.setting("paused", False):
             self.write_state("PAUSED")
             return
@@ -106,6 +134,19 @@ class OffloadService:
         self._cleanup_verified_days()
         self.last_error = None
         self.write_state("IDLE" if not self.ledger.pending_file() else "UPLOADING")
+
+    def _ensure_google(self) -> bool:
+        credentials = configured_credentials(self.config)
+        if not credentials:
+            self.oauth = None
+            self.drive = None
+            self.credential_fingerprint = None
+            return False
+        fingerprint = credentials.public_dict()["fingerprint"]
+        if self.drive is None or fingerprint != self.credential_fingerprint:
+            self.oauth, self.drive = build_google(self.config)
+            self.credential_fingerprint = fingerprint
+        return True
 
     def _discover_days(self) -> None:
         now_day = datetime.now(self.timezone).strftime("%Y-%m-%d")
@@ -173,6 +214,8 @@ class OffloadService:
             self.ledger.register_manifest(day_name, manifest_path, manifest_path.stat().st_size)
 
     def _folder_for(self, day: str, relative_name: str) -> str:
+        if self.drive is None:
+            raise GoogleDriveError("Google Drive is not configured")
         day_key = f"folder:raw:{day}"
         day_folder = self.ledger.setting(day_key)
         if not day_folder:
@@ -193,6 +236,8 @@ class OffloadService:
         return str(section_folder)
 
     def _upload_file(self, item: dict[str, Any]) -> None:
+        if self.drive is None:
+            raise GoogleDriveError("Google Drive is not configured")
         local_path = Path(item["local_path"])
         if not local_path.is_file():
             self.ledger.update_upload(

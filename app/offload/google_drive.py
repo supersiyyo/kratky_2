@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-import os
+import hashlib
 import urllib.error
 import urllib.parse
 import urllib.request
@@ -25,6 +25,58 @@ class GoogleDriveError(RuntimeError):
 
 class AuthorizationPending(GoogleDriveError):
     pass
+
+
+@dataclass(frozen=True, slots=True)
+class OAuthClientCredentials:
+    client_id: str
+    client_secret: str
+
+    def public_dict(self) -> dict[str, str]:
+        identifier = self.client_id.split(".", 1)[0]
+        hint = f"…{identifier[-8:]}.apps.googleusercontent.com"
+        fingerprint = hashlib.sha256(self.client_id.encode()).hexdigest()[:12]
+        return {"client_id_hint": hint, "fingerprint": fingerprint}
+
+
+class CredentialStore:
+    def __init__(self, path: Path):
+        self.path = path
+
+    def load(self) -> OAuthClientCredentials | None:
+        value = read_json(self.path, None)
+        try:
+            return credentials_from_mapping(value)
+        except GoogleDriveError:
+            return None
+
+    def save(self, credentials: OAuthClientCredentials) -> None:
+        atomic_write_json(
+            self.path,
+            {
+                "client_id": credentials.client_id,
+                "client_secret": credentials.client_secret,
+            },
+            mode=0o600,
+        )
+
+    def clear(self) -> None:
+        self.path.unlink(missing_ok=True)
+
+
+def credentials_from_mapping(value: Any) -> OAuthClientCredentials:
+    if not isinstance(value, dict):
+        raise GoogleDriveError("OAuth credential file must contain a JSON object")
+    candidate = value.get("installed", value)
+    if not isinstance(candidate, dict):
+        raise GoogleDriveError("OAuth credential JSON has an invalid installed section")
+    client_id = str(candidate.get("client_id", "")).strip()
+    client_secret = str(candidate.get("client_secret", "")).strip()
+    if not client_id.endswith(".apps.googleusercontent.com"):
+        raise GoogleDriveError("OAuth credential JSON does not contain a valid Google client ID")
+    if not client_secret:
+        raise GoogleDriveError("OAuth credential JSON does not contain a client secret")
+    return OAuthClientCredentials(client_id, client_secret)
 
 
 @dataclass(frozen=True, slots=True)
@@ -62,18 +114,18 @@ class TokenStore:
 class GoogleOAuth:
     def __init__(
         self,
-        client_id: str,
+        credentials: OAuthClientCredentials,
         token_store: TokenStore,
         opener: Any = urllib.request.urlopen,
     ) -> None:
-        self.client_id = client_id
+        self.credentials = credentials
         self.token_store = token_store
         self.opener = opener
 
     def start(self) -> DeviceAuthorization:
         payload = self._form(
             DEVICE_CODE_URL,
-            {"client_id": self.client_id, "scope": DRIVE_FILE_SCOPE},
+            {"client_id": self.credentials.client_id, "scope": DRIVE_FILE_SCOPE},
         )
         return DeviceAuthorization(
             str(payload["device_code"]),
@@ -88,7 +140,8 @@ class GoogleOAuth:
             token = self._form(
                 TOKEN_URL,
                 {
-                    "client_id": self.client_id,
+                    "client_id": self.credentials.client_id,
+                    "client_secret": self.credentials.client_secret,
                     "device_code": device_code,
                     "grant_type": "urn:ietf:params:oauth:grant-type:device_code",
                 },
@@ -107,7 +160,8 @@ class GoogleOAuth:
         refreshed = self._form(
             TOKEN_URL,
             {
-                "client_id": self.client_id,
+                "client_id": self.credentials.client_id,
+                "client_secret": self.credentials.client_secret,
                 "refresh_token": str(token["refresh_token"]),
                 "grant_type": "refresh_token",
             },

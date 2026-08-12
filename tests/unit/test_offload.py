@@ -8,7 +8,12 @@ from app.capture.state import atomic_write_json
 from app.common.config import config_from_mapping
 from app.offload.google_drive import GoogleDriveError, TokenStore
 from app.offload.ledger import OffloadLedger
-from app.offload.service import OffloadService, ledger_path, token_path
+from app.offload.service import (
+    OffloadService,
+    ledger_path,
+    offload_state_path,
+    token_path,
+)
 from app.sensors.history import append_history, daily_history_path
 from tests.unit.test_config import valid_mapping
 from tests.unit.test_sensor_history import snapshot
@@ -90,6 +95,7 @@ def offload_config(tmp_path: Path):
     raw["offload"] = {
         "enabled": True,
         "oauth_client_id": "test-client.apps.googleusercontent.com",
+        "oauth_client_secret": "test-secret",
         "auto_cleanup": True,
         "interval_seconds": 5,
         "upload_chunk_mib": 1,
@@ -115,6 +121,22 @@ def create_complete_day(config, first: datetime) -> dict[str, Path]:
         snapshot(first, 78.4, 6.2),
     )
     return paths
+
+
+def test_enabled_service_waits_safely_for_dashboard_oauth_setup(tmp_path: Path) -> None:
+    raw = valid_mapping(tmp_path)
+    raw["offload"] = {"enabled": True}
+    config = config_from_mapping(raw)
+
+    service = OffloadService(config)
+    service.tick()
+
+    assert service.drive is None
+    assert service.ledger.summary()["days"] == []
+    assert offload_state_path(config).is_file()
+    assert '"status": "NOT_CONFIGURED"' in offload_state_path(config).read_text(
+        encoding="utf-8"
+    )
 
 
 def test_verified_complete_day_removes_only_local_video_files(

@@ -215,12 +215,20 @@ One-time Google setup:
    Google accounts that will connect it as test users. Publish the app before a
    long-running deployment so the testing refresh-token limit does not stop the
    transfer after seven days.
-3. Create an OAuth client for **TVs and Limited Input devices** and copy its
-   client ID.
-4. Set `offload.enabled: true` and paste the client ID into
-   `offload.oauth_client_id` in `/etc/kratky/config.yaml`.
-5. Apply the service update, open **Storage & Offload** in the dashboard, enter
-   a project name, and follow the displayed Google device authorization code.
+3. Create an OAuth client for **TVs and Limited Input devices** and download its
+   JSON credential file.
+4. Open **Storage & Offload** in the dashboard and upload that JSON once in the
+   administrator setup section. The client ID and secret are stored outside Git
+   with restricted permissions and are never returned by the status API.
+5. Set `offload.enabled: true` in `/etc/kratky/config.yaml` when background
+   transfer is approved for production, then apply the service update.
+
+After administrator setup, an ordinary user only enters a project name, clicks
+**Connect Google Drive**, and follows the displayed Google device authorization
+code. The app creates the named project folder and its `raw`,
+`timelapse-daily`, and `final` subfolders automatically. Preview setup can test
+authorization and folder creation while `offload.enabled` remains false;
+background uploads and local cleanup cannot run in that mode.
 
 The app requests only the `drive.file` scope. It creates and manages its own
 project folder with `raw`, `timelapse-daily`, and `final` subfolders; it does not

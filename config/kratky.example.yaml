@@ -28,8 +28,7 @@ sensors:
 
 offload:
   enabled: false
-  # Create a Google OAuth client for TVs and Limited Input devices.
-  oauth_client_id: null
+  # Upload the Google OAuth JSON through Storage & Offload in the dashboard.
   auto_cleanup: true
   interval_seconds: 30
   upload_chunk_mib: 8

@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import socket
 import threading
 from datetime import datetime, timedelta
@@ -37,10 +38,18 @@ from app.common.paths import (
     sensor_state_path,
 )
 from app.sensors.history import load_history
-from app.offload.google_drive import AuthorizationPending, GoogleDriveError, TokenStore
+from app.offload.google_drive import (
+    AuthorizationPending,
+    CredentialStore,
+    GoogleDriveError,
+    TokenStore,
+    credentials_from_mapping,
+)
 from app.offload.ledger import OffloadLedger
 from app.offload.service import (
     build_google,
+    configured_credentials,
+    credential_path,
     ledger_path,
     offload_state_path,
     pending_auth_path,
@@ -106,11 +115,12 @@ def create_app(config: AppConfig | None = None) -> Flask:
         return {"capture": capture, "sensors": sensors}
 
     def offload_payload() -> dict[str, Any]:
-        configured = bool(
-            app_config.offload.enabled and app_config.offload.oauth_client_id
-        )
+        credentials = configured_credentials(app_config)
+        configured = credentials is not None
         ledger = OffloadLedger(ledger_path(app_config))
         state = read_json(offload_state_path(app_config), {})
+        if not app_config.offload.enabled:
+            state = {"status": "SETUP_ONLY"}
         pending = read_json(pending_auth_path(app_config), None)
         pending_public = (
             {
@@ -123,6 +133,8 @@ def create_app(config: AppConfig | None = None) -> Flask:
         )
         return {
             "configured": configured,
+            "service_enabled": app_config.offload.enabled,
+            "credential": credentials.public_dict() if credentials else None,
             "connected": TokenStore(token_path(app_config)).load() is not None,
             "authorization_pending": isinstance(pending, dict),
             "authorization": pending_public,
@@ -152,10 +164,46 @@ def create_app(config: AppConfig | None = None) -> Flask:
     def offload_status():  # type: ignore[no-untyped-def]
         return jsonify(offload_payload())
 
+    @app.post("/api/offload/credentials")
+    def offload_credentials():  # type: ignore[no-untyped-def]
+        uploaded = request.files.get("credentials")
+        if uploaded is None or not uploaded.filename:
+            return jsonify({"ok": False, "error": "choose a Google OAuth JSON file"}), 400
+        existing = configured_credentials(app_config)
+        if existing and request.form.get("confirm") != "REPLACE":
+            return jsonify({"ok": False, "error": "replacement confirmation is required"}), 409
+        raw = uploaded.stream.read(65537)
+        if len(raw) > 65536:
+            return jsonify({"ok": False, "error": "OAuth JSON must be 64 KiB or smaller"}), 413
+        try:
+            value = json.loads(raw.decode("utf-8"))
+            credentials = credentials_from_mapping(value)
+        except (UnicodeDecodeError, json.JSONDecodeError, GoogleDriveError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 400
+        directory = credential_path(app_config).parent
+        directory.mkdir(parents=True, exist_ok=True)
+        os.chmod(directory, 0o700)
+        CredentialStore(credential_path(app_config)).save(credentials)
+        TokenStore(token_path(app_config)).clear()
+        pending_auth_path(app_config).unlink(missing_ok=True)
+        OffloadLedger(ledger_path(app_config)).clear_destination()
+        return jsonify({"ok": True, "credential": credentials.public_dict()})
+
+    @app.post("/api/offload/credentials/remove")
+    def offload_credentials_remove():  # type: ignore[no-untyped-def]
+        body = request.get_json(silent=True) or {}
+        if body.get("confirm") != "REMOVE":
+            return jsonify({"ok": False, "error": "confirmation is required"}), 400
+        CredentialStore(credential_path(app_config)).clear()
+        TokenStore(token_path(app_config)).clear()
+        pending_auth_path(app_config).unlink(missing_ok=True)
+        OffloadLedger(ledger_path(app_config)).clear_destination()
+        return jsonify({"ok": True})
+
     @app.post("/api/offload/connect")
     def offload_connect():  # type: ignore[no-untyped-def]
-        if not app_config.offload.enabled or not app_config.offload.oauth_client_id:
-            return jsonify({"ok": False, "error": "Google Drive offload is not configured"}), 503
+        if configured_credentials(app_config) is None:
+            return jsonify({"ok": False, "error": "Google OAuth application is not configured"}), 503
         body = request.get_json(silent=True) or {}
         project_name = " ".join(str(body.get("project_name", "")).split()).strip()
         if not project_name or len(project_name) > 120:
@@ -168,7 +216,9 @@ def create_app(config: AppConfig | None = None) -> Flask:
                 {
                     "device_code": authorization.device_code,
                     "project_name": project_name,
-                    "auto_cleanup": bool(body.get("auto_cleanup", True)),
+                    "auto_cleanup": bool(body.get("auto_cleanup", True))
+                    if app_config.offload.enabled
+                    else False,
                     **authorization.public_dict(),
                 },
                 mode=0o600,
@@ -205,6 +255,15 @@ def create_app(config: AppConfig | None = None) -> Flask:
         paused = bool(body.get("paused", True))
         OffloadLedger(ledger_path(app_config)).set_setting("paused", paused)
         return jsonify({"ok": True, "paused": paused})
+
+    @app.post("/api/offload/cleanup")
+    def offload_cleanup():  # type: ignore[no-untyped-def]
+        if not app_config.offload.enabled:
+            return jsonify({"ok": False, "error": "cleanup is disabled in preview setup mode"}), 409
+        body = request.get_json(silent=True) or {}
+        enabled = bool(body.get("enabled", False))
+        OffloadLedger(ledger_path(app_config)).set_setting("auto_cleanup", enabled)
+        return jsonify({"ok": True, "auto_cleanup": enabled})
 
     @app.post("/api/offload/disconnect")
     def offload_disconnect():  # type: ignore[no-untyped-def]
