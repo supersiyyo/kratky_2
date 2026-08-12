@@ -28,7 +28,7 @@ DEBIAN_FRONTEND=noninteractive apt-get install -y \
 usermod -a -G video,dialout,i2c,gpio "${APP_USER}"
 install -d -o root -g "${APP_GROUP}" -m 0750 "${CONFIG_DIR}"
 install -d -o "${APP_USER}" -g "${APP_GROUP}" -m 0750 \
-  "${DATA_DIR}/recordings" "${DATA_DIR}/state" \
+  "${DATA_DIR}/recordings" "${DATA_DIR}/state" "${DATA_DIR}/timelapses" \
   "${DATA_DIR}/sensors" "${RUN_DIR}"
 
 if [[ ! -f "${CONFIG_PATH}" ]]; then

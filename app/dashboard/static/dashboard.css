@@ -123,6 +123,10 @@ button:disabled { opacity: .4; cursor: not-allowed; border-color: var(--line); c
 .review-grid { display: grid; grid-template-columns: minmax(0, 1.6fr) minmax(300px, .7fr); gap: 18px; }
 .review-video-panel, .review-data { padding: 20px; }
 .review-video-panel video { display: block; width: 100%; max-height: 72vh; border-radius: 12px; background: #000; }
+.timelapse-preview { margin: 22px 0; padding: 20px; border: 1px solid var(--line); border-radius: 12px; background: var(--panel-2); }
+.timelapse-preview .card-heading { margin-bottom: 14px; }
+.timelapse-preview video { display: block; width: 100%; max-height: 72vh; border-radius: 12px; background: #000; }
+.timelapse-preview small { display: block; margin-top: 10px; color: var(--muted); }
 .recorded-clock { display: flex; justify-content: space-between; align-items: center; gap: 16px; margin-top: 14px; }
 .recorded-clock span, .review-note { color: var(--muted); }
 .recorded-clock strong { font-family: ui-monospace, monospace; }

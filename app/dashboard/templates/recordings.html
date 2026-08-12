@@ -30,6 +30,19 @@
       {% elif day.missing_components %}
       <p class="day-warning">Missing: {{ day.missing_components|join(', ') }}. The download manifest will identify these gaps.</p>
       {% endif %}
+      {% if timelapse %}
+      <div class="timelapse-preview">
+        <div class="card-heading">
+          <div>
+            <h3>Daily timelapse</h3>
+            <p>Preview the combined Water and Environment timelapse for this day.</p>
+          </div>
+          <a class="button ghost" download href="{{ url_for('recording_day_timelapse', day=day.day) }}">Download combined video</a>
+        </div>
+        <video controls preload="metadata" src="{{ url_for('recording_day_timelapse', day=day.day) }}"></video>
+        <small>{{ timelapse.filename }} · {{ (timelapse.size / 1048576)|round(1) }} MiB</small>
+      </div>
+      {% endif %}
       {% for name in expected_cameras %}
       {% set camera = day.cameras[name] %}
       <div class="recording-group">

@@ -38,6 +38,7 @@ from app.common.paths import (
     sensor_state_path,
 )
 from app.sensors.history import load_history
+from app.timelapse.render import combined_timelapse_path
 from app.offload.google_drive import (
     AuthorizationPending,
     CredentialStore,
@@ -361,12 +362,42 @@ def create_app(config: AppConfig | None = None) -> Flask:
             if camera.get("current_recording")
             and Path(camera["current_recording"]).parent.parent.name == day
         ]
+        combined = combined_timelapse_path(app_config, day)
+        timelapse = (
+            {
+                "filename": combined.name,
+                "size": combined.stat().st_size,
+            }
+            if combined.is_file()
+            else None
+        )
         return render_template(
             "recordings.html",
             day=selected,
             recordings=item_dicts,
             active=active,
             expected_cameras=EXPECTED_CAMERAS,
+            timelapse=timelapse,
+        )
+
+    @app.get("/recordings/timelapse/<day>/combined.mp4")
+    def recording_day_timelapse(day: str):  # type: ignore[no-untyped-def]
+        selected = recording_day(
+            app_config.storage.root,
+            app_config.runtime.sensor_dir,
+            timezone,
+            day,
+        )
+        if selected is None:
+            abort(404)
+        path = combined_timelapse_path(app_config, day)
+        if not path.is_file():
+            abort(404)
+        return send_file(
+            path,
+            mimetype="video/mp4",
+            conditional=True,
+            download_name=path.name,
         )
 
     @app.get("/recordings/archive/<day>.zip")

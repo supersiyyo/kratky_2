@@ -15,6 +15,7 @@ from app.offload.google_drive import DeviceAuthorization
 from app.offload.service import credential_path, ledger_path, pending_auth_path
 from app.offload.ledger import OffloadLedger
 from app.sensors.history import append_history, daily_history_path
+from app.timelapse.render import combined_timelapse_path
 from tests.unit.test_sensor_history import snapshot
 from tests.unit.test_config import valid_mapping
 
@@ -311,6 +312,43 @@ def test_recordings_page_groups_water_environment_and_sensors_by_day(
     assert b"Sensor data" in index_response.data
     assert detail_response.status_code == 200
     assert detail_response.data.count(b">Review</a>") == 2
+
+
+def test_completed_combined_timelapse_is_previewed_on_its_recording_day(
+    tmp_path: Path,
+) -> None:
+    config = config_from_mapping(valid_mapping(tmp_path))
+    first = datetime(2026, 7, 25, 8, tzinfo=ZoneInfo("America/Los_Angeles"))
+    _complete_recording_day(config, first)
+    combined = combined_timelapse_path(config, "2026-07-25")
+    combined.parent.mkdir(parents=True)
+    combined.write_bytes(b"combined-video")
+    client = create_app(config).test_client()
+
+    detail = client.get("/recordings/2026-07-25")
+    video = client.get("/recordings/timelapse/2026-07-25/combined.mp4")
+
+    assert detail.status_code == 200
+    assert b"Daily timelapse" in detail.data
+    assert b"<video controls" in detail.data
+    assert b"Download combined video" in detail.data
+    assert video.status_code == 200
+    assert video.mimetype == "video/mp4"
+    assert video.data == b"combined-video"
+
+
+def test_missing_combined_timelapse_is_not_advertised(tmp_path: Path) -> None:
+    config = config_from_mapping(valid_mapping(tmp_path))
+    first = datetime(2026, 7, 25, 8, tzinfo=ZoneInfo("America/Los_Angeles"))
+    _complete_recording_day(config, first)
+    client = create_app(config).test_client()
+
+    detail = client.get("/recordings/2026-07-25")
+    video = client.get("/recordings/timelapse/2026-07-25/combined.mp4")
+
+    assert detail.status_code == 200
+    assert b"Daily timelapse" not in detail.data
+    assert video.status_code == 404
 
 
 def test_daily_archive_streams_both_cameras_timing_sensors_and_manifest(

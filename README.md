@@ -193,6 +193,7 @@ configuration and data stay outside Git:
 /var/lib/kratky/recordings/
 /var/lib/kratky/state/
 /var/lib/kratky/sensors/
+/var/lib/kratky/timelapses/
 /run/kratky/
 ```
 
@@ -200,6 +201,29 @@ Production mode fails validation if a required camera is disabled or if the
 free-space reserve is below 10 GiB. Both cameras use distinct stable device
 paths. The production reserve should be 10–12 GiB; the example uses the 2 GiB
 development reserve.
+
+## Daily timelapses
+
+The timelapse renderer uses the existing recording timing metadata to sample a
+fixed midnight-to-midnight calendar timeline. Each day produces two clean,
+full-resolution 1920x1080 camera videos and one labeled 1920x1080 side-by-side
+preview. All three are 30-second, 30 fps H.264 MP4 files with no audio. Missing
+recording time remains visible as a black **No recording available** interval;
+available footage is never stretched to conceal a gap.
+
+Render one or more finalized dates with:
+
+```bash
+cd /home/kratky/kratky-monitor
+.venv/bin/python -m app.timelapse.render 2026-07-31 2026-08-01
+```
+
+Outputs are written under `/var/lib/kratky/timelapses/YYYY-MM-DD/` along with a
+`daily-summary.json` containing the source coverage, missing sample counts,
+dimensions, duration, frame count, file size, and MD5 checksum. Existing
+outputs are preserved unless `--force` is explicitly supplied.
+Use `--combined-only` to rebuild the presentation layout from already-rendered
+individual videos without resampling the original recordings.
 
 ## Google Drive offload
 
