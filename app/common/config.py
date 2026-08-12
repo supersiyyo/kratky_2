@@ -68,6 +68,15 @@ class SensorConfig:
 
 
 @dataclass(frozen=True, slots=True)
+class OffloadConfig:
+    enabled: bool = False
+    oauth_client_id: str | None = None
+    auto_cleanup: bool = True
+    interval_seconds: float = 30.0
+    upload_chunk_mib: int = 8
+
+
+@dataclass(frozen=True, slots=True)
 class AppConfig:
     deployment: DeploymentConfig
     storage: StorageConfig
@@ -75,6 +84,7 @@ class AppConfig:
     runtime: RuntimeConfig = field(default_factory=RuntimeConfig)
     dashboard: DashboardConfig = field(default_factory=DashboardConfig)
     sensors: SensorConfig = field(default_factory=SensorConfig)
+    offload: OffloadConfig = field(default_factory=OffloadConfig)
 
 
 def _mapping(value: Any, label: str) -> dict[str, Any]:
@@ -98,6 +108,7 @@ def config_from_mapping(raw: dict[str, Any]) -> AppConfig:
     runtime_raw = _mapping(raw.get("runtime"), "runtime").copy()
     dashboard_raw = _mapping(raw.get("dashboard"), "dashboard")
     sensors_raw = _mapping(raw.get("sensors"), "sensors")
+    offload_raw = _mapping(raw.get("offload"), "offload")
     cameras_raw = _mapping(raw.get("cameras"), "cameras")
 
     deployment = DeploymentConfig(**deployment_raw)
@@ -158,7 +169,16 @@ def config_from_mapping(raw: dict[str, Any]) -> AppConfig:
     )
     dashboard = DashboardConfig(**dashboard_raw)
     sensors = SensorConfig(**sensors_raw)
-    return AppConfig(deployment, storage, cameras, runtime, dashboard, sensors)
+    offload = OffloadConfig(**offload_raw)
+    if offload.enabled and not offload.oauth_client_id:
+        raise ConfigError("offload.oauth_client_id is required when offload is enabled")
+    if offload.interval_seconds < 5:
+        raise ConfigError("offload.interval_seconds must be at least 5")
+    if offload.upload_chunk_mib < 1 or offload.upload_chunk_mib > 64:
+        raise ConfigError("offload.upload_chunk_mib must be between 1 and 64")
+    return AppConfig(
+        deployment, storage, cameras, runtime, dashboard, sensors, offload
+    )
 
 
 def load_config(path: str | Path | None = None) -> AppConfig:

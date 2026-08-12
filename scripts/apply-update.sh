@@ -28,7 +28,7 @@ cleanup() {
   rm -rf -- "${UNIT_RENDER_DIR}"
 }
 trap cleanup EXIT
-for unit in kratky-capture.service kratky-dashboard.service kratky-sensors.service; do
+for unit in kratky-capture.service kratky-dashboard.service kratky-sensors.service kratky-offload.service; do
   python3 "${REPO_DIR}/scripts/render-systemd-unit.py" \
     "${REPO_DIR}/systemd/${unit}" "${UNIT_RENDER_DIR}/${unit}" \
     --user "${APP_USER}" --group "${APP_GROUP}" --repo-dir "${REPO_DIR}"
@@ -42,5 +42,5 @@ if [[ "${changed}" -eq 1 ]]; then
   systemctl daemon-reload
 fi
 
-systemctl restart kratky-capture.service kratky-dashboard.service kratky-sensors.service
+systemctl restart kratky-capture.service kratky-dashboard.service kratky-sensors.service kratky-offload.service
 KRATKY_USER="${APP_USER}" "${REPO_DIR}/scripts/verify-installation.sh"

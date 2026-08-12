@@ -51,7 +51,7 @@ cleanup() {
   rm -rf -- "${UNIT_RENDER_DIR}"
 }
 trap cleanup EXIT
-for unit in kratky-capture.service kratky-dashboard.service kratky-sensors.service; do
+for unit in kratky-capture.service kratky-dashboard.service kratky-sensors.service kratky-offload.service; do
   python3 "${REPO_DIR}/scripts/render-systemd-unit.py" \
     "${REPO_DIR}/systemd/${unit}" "${UNIT_RENDER_DIR}/${unit}" \
     --user "${APP_USER}" --group "${APP_GROUP}" --repo-dir "${REPO_DIR}"
@@ -60,11 +60,11 @@ for unit in kratky-capture.service kratky-dashboard.service kratky-sensors.servi
 done
 
 systemctl daemon-reload
-systemctl enable kratky-capture.service kratky-dashboard.service kratky-sensors.service
+systemctl enable kratky-capture.service kratky-dashboard.service kratky-sensors.service kratky-offload.service
 
 "${REPO_DIR}/.venv/bin/python" -c \
   "from app.common.config import load_config; load_config('${CONFIG_PATH}')" \
   || { echo "Configuration is invalid; services were not started." >&2; exit 1; }
 
-systemctl restart kratky-capture.service kratky-dashboard.service kratky-sensors.service
+systemctl restart kratky-capture.service kratky-dashboard.service kratky-sensors.service kratky-offload.service
 KRATKY_USER="${APP_USER}" "${REPO_DIR}/scripts/verify-installation.sh"

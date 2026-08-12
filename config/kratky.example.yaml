@@ -26,6 +26,14 @@ sensors:
   modbus_device: /dev/ttyUSB0
   modbus_slave: 1
 
+offload:
+  enabled: false
+  # Create a Google OAuth client for TVs and Limited Input devices.
+  oauth_client_id: null
+  auto_cleanup: true
+  interval_seconds: 30
+  upload_chunk_mib: 8
+
 cameras:
   water:
     enabled: true
@@ -42,9 +50,9 @@ cameras:
     preset: veryfast
 
   environment:
-    enabled: false
-    required: false
-    device: null
+    enabled: true
+    required: true
+    device: /dev/v4l/by-id/usb-MACROSILICON_Guermok_USB3_Video_20210623-video-index0
     resolution: 1920x1080
     input_format: mjpeg
     input_fps: 10

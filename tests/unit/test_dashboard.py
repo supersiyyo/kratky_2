@@ -26,6 +26,20 @@ def test_dashboard_and_planned_camera_render(tmp_path: Path) -> None:
     assert b"Control Panel" in response.data
     assert response.data.count(b"data-action=") == 3
     assert b"Camera planned" in response.data
+    assert b"Storage &amp; Offload" in response.data
+
+
+def test_offload_page_explains_when_google_is_not_configured(tmp_path: Path) -> None:
+    app = create_app(config_from_mapping(valid_mapping(tmp_path)))
+    client = app.test_client()
+    page = client.get("/offload")
+    status = client.get("/api/offload/status")
+
+    assert page.status_code == 200
+    assert b"Connect Google Drive" in page.data
+    assert status.status_code == 200
+    assert status.get_json()["configured"] is False
+    assert status.get_json()["connected"] is False
 
 
 def test_control_rejects_unknown_action(tmp_path: Path) -> None:

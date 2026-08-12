@@ -1,0 +1,82 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Storage &amp; Offload · Kratky monitor</title>
+  <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
+  <script defer src="{{ url_for('static', filename='offload.js') }}"></script>
+</head>
+<body>
+  <header>
+    <div><p class="eyebrow">Project storage</p><h1>Storage &amp; Offload</h1></div>
+    <div class="header-actions">
+      <a class="button" href="{{ url_for('recordings') }}">Recordings</a>
+      <a class="button primary" href="{{ url_for('index') }}">Live dashboard</a>
+    </div>
+  </header>
+  <main>
+    <section class="offload-grid">
+      <article class="panel offload-card">
+        <div class="card-heading">
+          <div><p class="eyebrow">Destination</p><h2>Google Drive</h2></div>
+          <span id="drive-status" class="status neutral">CHECKING</span>
+        </div>
+        <div id="not-configured" class="offload-message" hidden>
+          <p>Google Drive has not been enabled for this preview. Add the Kratky OAuth client ID to the Pi configuration to begin.</p>
+        </div>
+        <form id="connect-form" class="offload-form">
+          <label for="project-name">Project name</label>
+          <input id="project-name" maxlength="120" required placeholder="Kratky Hydroponics Study 2026">
+          <label class="check-line">
+            <input id="auto-cleanup" type="checkbox" checked>
+            Delete local videos after the complete day is verified in Google Drive
+          </label>
+          <button class="button primary" type="submit">Connect Google Drive</button>
+        </form>
+        <div id="authorization" class="authorization" hidden>
+          <p>On a phone or laptop, open:</p>
+          <a id="verification-link" class="authorization-link" target="_blank" rel="noopener"></a>
+          <p>Enter this code:</p>
+          <strong id="user-code" class="authorization-code"></strong>
+          <p id="authorization-status">Waiting for Google authorization…</p>
+        </div>
+        <div id="connected" hidden>
+          <dl class="facts">
+            <div><dt>Project</dt><dd id="connected-project">—</dd></div>
+            <div><dt>Automatic cleanup</dt><dd id="cleanup-mode">—</dd></div>
+          </dl>
+          <div class="controls">
+            <a id="drive-link" class="button primary" target="_blank" rel="noopener">Open in Google Drive</a>
+            <button id="pause-offload" type="button">Pause uploads</button>
+            <button id="disconnect-drive" class="danger" type="button">Disconnect</button>
+          </div>
+        </div>
+      </article>
+
+      <article class="panel offload-card">
+        <div class="card-heading">
+          <div><p class="eyebrow">Background service</p><h2>Transfer status</h2></div>
+          <span id="service-status" class="status neutral">WAITING</span>
+        </div>
+        <dl class="facts">
+          <div><dt>Current day</dt><dd id="current-day">—</dd></div>
+          <div><dt>Current file</dt><dd id="current-file">—</dd></div>
+          <div><dt>Progress</dt><dd id="current-progress">—</dd></div>
+          <div><dt>Last update</dt><dd id="offload-updated">—</dd></div>
+        </dl>
+        <p id="offload-error" class="error"></p>
+        <p class="control-note">Only finalized files from completed dates are uploaded. Active recordings are never selected.</p>
+      </article>
+    </section>
+
+    <section class="panel archive-panel offload-days-panel">
+      <div class="card-heading">
+        <div><h2>Daily offload history</h2><p>A local video is removed only after every expected file for its day is verified.</p></div>
+      </div>
+      <div id="offload-days" class="day-list"><p class="empty">No days registered yet.</p></div>
+    </section>
+  </main>
+  <div id="toast" role="status" aria-live="polite"></div>
+</body>
+</html>

@@ -28,7 +28,7 @@ from app.capture.recordings import (
     recording_day,
     recording_timing,
 )
-from app.capture.state import read_json
+from app.capture.state import atomic_write_json, read_json
 from app.common.config import AppConfig, load_config
 from app.common.paths import (
     capture_state_path,
@@ -37,6 +37,16 @@ from app.common.paths import (
     sensor_state_path,
 )
 from app.sensors.history import load_history
+from app.offload.google_drive import AuthorizationPending, GoogleDriveError, TokenStore
+from app.offload.ledger import OffloadLedger
+from app.offload.service import (
+    build_google,
+    ledger_path,
+    offload_state_path,
+    pending_auth_path,
+    provision_project,
+    token_path,
+)
 
 
 def _active_paths(capture: dict[str, Any]) -> set[Path]:
@@ -95,6 +105,31 @@ def create_app(config: AppConfig | None = None) -> Flask:
         )
         return {"capture": capture, "sensors": sensors}
 
+    def offload_payload() -> dict[str, Any]:
+        configured = bool(
+            app_config.offload.enabled and app_config.offload.oauth_client_id
+        )
+        ledger = OffloadLedger(ledger_path(app_config))
+        state = read_json(offload_state_path(app_config), {})
+        pending = read_json(pending_auth_path(app_config), None)
+        pending_public = (
+            {
+                "user_code": pending.get("user_code"),
+                "verification_url": pending.get("verification_url"),
+                "interval": pending.get("interval", 5),
+            }
+            if isinstance(pending, dict)
+            else None
+        )
+        return {
+            "configured": configured,
+            "connected": TokenStore(token_path(app_config)).load() is not None,
+            "authorization_pending": isinstance(pending, dict),
+            "authorization": pending_public,
+            "service": state,
+            **ledger.summary(),
+        }
+
     @app.after_request
     def no_cache(response):  # type: ignore[no-untyped-def]
         if request.path.startswith("/api/") or request.path.startswith("/preview/"):
@@ -108,6 +143,78 @@ def create_app(config: AppConfig | None = None) -> Flask:
     @app.get("/api/status")
     def status():  # type: ignore[no-untyped-def]
         return jsonify(status_payload())
+
+    @app.get("/offload")
+    def offload():  # type: ignore[no-untyped-def]
+        return render_template("offload.html", config=app_config)
+
+    @app.get("/api/offload/status")
+    def offload_status():  # type: ignore[no-untyped-def]
+        return jsonify(offload_payload())
+
+    @app.post("/api/offload/connect")
+    def offload_connect():  # type: ignore[no-untyped-def]
+        if not app_config.offload.enabled or not app_config.offload.oauth_client_id:
+            return jsonify({"ok": False, "error": "Google Drive offload is not configured"}), 503
+        body = request.get_json(silent=True) or {}
+        project_name = " ".join(str(body.get("project_name", "")).split()).strip()
+        if not project_name or len(project_name) > 120:
+            return jsonify({"ok": False, "error": "enter a project name"}), 400
+        try:
+            oauth, _drive = build_google(app_config)
+            authorization = oauth.start()
+            atomic_write_json(
+                pending_auth_path(app_config),
+                {
+                    "device_code": authorization.device_code,
+                    "project_name": project_name,
+                    "auto_cleanup": bool(body.get("auto_cleanup", True)),
+                    **authorization.public_dict(),
+                },
+                mode=0o600,
+            )
+        except GoogleDriveError as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 502
+        return jsonify({"ok": True, **authorization.public_dict()})
+
+    @app.post("/api/offload/connect/status")
+    def offload_connect_status():  # type: ignore[no-untyped-def]
+        pending = read_json(pending_auth_path(app_config), None)
+        if not isinstance(pending, dict) or not pending.get("device_code"):
+            return jsonify({"ok": False, "error": "no authorization is pending"}), 404
+        try:
+            oauth, drive = build_google(app_config)
+            if TokenStore(token_path(app_config)).load() is None:
+                oauth.finish(str(pending["device_code"]))
+            result = provision_project(
+                OffloadLedger(ledger_path(app_config)),
+                drive,
+                str(pending["project_name"]),
+                bool(pending.get("auto_cleanup", True)),
+            )
+            pending_auth_path(app_config).unlink(missing_ok=True)
+        except AuthorizationPending:
+            return jsonify({"ok": True, "pending": True}), 202
+        except (GoogleDriveError, ValueError) as exc:
+            return jsonify({"ok": False, "error": str(exc)}), 502
+        return jsonify({"ok": True, "pending": False, **result})
+
+    @app.post("/api/offload/pause")
+    def offload_pause():  # type: ignore[no-untyped-def]
+        body = request.get_json(silent=True) or {}
+        paused = bool(body.get("paused", True))
+        OffloadLedger(ledger_path(app_config)).set_setting("paused", paused)
+        return jsonify({"ok": True, "paused": paused})
+
+    @app.post("/api/offload/disconnect")
+    def offload_disconnect():  # type: ignore[no-untyped-def]
+        body = request.get_json(silent=True) or {}
+        if body.get("confirm") != "DISCONNECT":
+            return jsonify({"ok": False, "error": "confirmation is required"}), 400
+        TokenStore(token_path(app_config)).clear()
+        pending_auth_path(app_config).unlink(missing_ok=True)
+        OffloadLedger(ledger_path(app_config)).clear_destination()
+        return jsonify({"ok": True})
 
     @app.post("/api/control")
     def control():  # type: ignore[no-untyped-def]

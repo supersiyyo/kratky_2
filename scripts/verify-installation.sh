@@ -49,6 +49,9 @@ check "runtime writable" runuser -u "${APP_USER}" -- test -w /run/kratky
 check "capture service active" systemctl is-active --quiet kratky-capture.service
 check "dashboard service active" systemctl is-active --quiet kratky-dashboard.service
 check "sensor service active" systemctl is-active --quiet kratky-sensors.service
+if "${PYTHON}" -c "from app.common.config import load_config; raise SystemExit(0 if load_config('${CONFIG_PATH}').offload.enabled else 1)"; then
+  check "offload service active" systemctl is-active --quiet kratky-offload.service
+fi
 check_retry "dashboard responds" 15 1 \
   curl --fail --silent --max-time 5 http://127.0.0.1:8080/api/status
 

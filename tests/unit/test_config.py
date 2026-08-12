@@ -60,3 +60,10 @@ def test_production_enforces_reserve(tmp_path: Path) -> None:
     raw["deployment"]["mode"] = "production"
     with pytest.raises(ConfigError, match="at least 10"):
         config_from_mapping(raw)
+
+
+def test_offload_requires_oauth_client_when_enabled(tmp_path: Path) -> None:
+    raw = valid_mapping(tmp_path)
+    raw["offload"] = {"enabled": True}
+    with pytest.raises(ConfigError, match="oauth_client_id"):
+        config_from_mapping(raw)

@@ -10,8 +10,8 @@ machine-specific configuration.
 
 ## Current profile and hardware findings
 
-The development profile supports the installed water camera and reports the
-future environment camera as `PLANNED`. A read-only audit on 2026-07-25 found:
+The current profile records the installed water and environment cameras. An
+initial read-only hardware audit on 2026-07-25 found:
 
 - Raspberry Pi 5 on Debian 13, with FFmpeg 7.1.5.
 - Guermok adapter `index0` at `/dev/video0`; `index1` is another interface on the
@@ -197,15 +197,49 @@ configuration and data stay outside Git:
 ```
 
 Production mode fails validation if a required camera is disabled or if the
-free-space reserve is below 10 GiB. Configure both distinct stable device paths
-only after the second adapter is physically audited. The production reserve
-should be 10–12 GiB; the example uses the 2 GiB development reserve.
+free-space reserve is below 10 GiB. Both cameras use distinct stable device
+paths. The production reserve should be 10–12 GiB; the example uses the 2 GiB
+development reserve.
+
+## Google Drive offload
+
+The optional offload service moves completed dates to a user-selected Google
+Drive account without interrupting capture. It uploads water and environment
+recordings, their timing files, the daily sensor history, and a manifest. Only
+dates earlier than today are eligible.
+
+One-time Google setup:
+
+1. Create or select a Google Cloud project and enable the Google Drive API.
+2. Configure the OAuth consent screen. For an external app in testing, add the
+   Google accounts that will connect it as test users. Publish the app before a
+   long-running deployment so the testing refresh-token limit does not stop the
+   transfer after seven days.
+3. Create an OAuth client for **TVs and Limited Input devices** and copy its
+   client ID.
+4. Set `offload.enabled: true` and paste the client ID into
+   `offload.oauth_client_id` in `/etc/kratky/config.yaml`.
+5. Apply the service update, open **Storage & Offload** in the dashboard, enter
+   a project name, and follow the displayed Google device authorization code.
+
+The app requests only the `drive.file` scope. It creates and manages its own
+project folder with `raw`, `timelapse-daily`, and `final` subfolders; it does not
+receive general access to the rest of the user's Drive.
+
+Automatic cleanup is deliberately day-based. The Pi keeps all local video if a
+file is missing, still active, changes size, fails upload, or does not match the
+remote size and MD5 checksum. After every expected file and the final manifest
+are verified, only the local `.mkv` files for that date are removed. Timing,
+sensor, manifest, and transfer-ledger metadata remain small and stay on the Pi.
+When offload is enabled, this verified cleanup replaces age-based deletion.
 
 ## Retention safety
 
-Finalized footage older than 30 days is deleted. Footage younger than 30 days is
-never silently deleted to regain reserve space. If usable free space reaches the
-configured reserve, workers finalize their files and pause. The dashboard shows:
+Without Google Drive offload, finalized footage older than 30 days is deleted.
+With offload enabled, age-based deletion is disabled and only remotely verified
+dates are cleaned up. Footage is never silently deleted to regain reserve space.
+If usable free space reaches the configured reserve, workers finalize their
+files and pause. The dashboard shows:
 
 - recent measured daily write rate;
 - measured one-camera retention in development;
