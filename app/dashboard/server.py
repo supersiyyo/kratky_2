@@ -220,6 +220,17 @@ def create_app(config: AppConfig | None = None) -> Flask:
         if not archive_slot.acquire(blocking=False):
             abort(429, "another daily archive is already downloading")
 
+        released = False
+        release_lock = threading.Lock()
+
+        def release_archive_slot() -> None:
+            nonlocal released
+            with release_lock:
+                if released:
+                    return
+                released = True
+                archive_slot.release()
+
         stream = stream_day_archive(
             selected,
             app_config.storage.root,
@@ -232,7 +243,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
             try:
                 yield from stream
             finally:
-                archive_slot.release()
+                release_archive_slot()
 
         response = Response(
             stream_with_context(guarded_stream()),
@@ -243,6 +254,7 @@ def create_app(config: AppConfig | None = None) -> Flask:
         )
         response.headers["Cache-Control"] = "no-store"
         response.headers["X-Content-Type-Options"] = "nosniff"
+        response.call_on_close(release_archive_slot)
         return response
 
     @app.get("/recordings/file/<path:relative>")

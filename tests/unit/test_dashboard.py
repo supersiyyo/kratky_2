@@ -224,3 +224,21 @@ def test_daily_archive_rejects_an_invalid_date(tmp_path: Path) -> None:
     app = create_app(config_from_mapping(valid_mapping(tmp_path)))
     response = app.test_client().get("/recordings/archive/2026-99-99.zip")
     assert response.status_code == 404
+
+
+def test_unstarted_archive_response_releases_the_download_slot(
+    tmp_path: Path,
+) -> None:
+    config = config_from_mapping(valid_mapping(tmp_path))
+    first = datetime(2026, 7, 25, 8, tzinfo=ZoneInfo("America/Los_Angeles"))
+    _complete_recording_day(config, first)
+    app = create_app(config)
+
+    with app.test_request_context("/recordings/archive/2026-07-25.zip"):
+        abandoned = app.view_functions["recording_day_archive"]("2026-07-25")
+        abandoned.close()
+
+    response = app.test_client().get("/recordings/archive/2026-07-25.zip")
+    assert response.status_code == 200
+    with zipfile.ZipFile(io.BytesIO(response.data)) as archive:
+        assert archive.testzip() is None
