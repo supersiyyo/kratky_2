@@ -12,6 +12,7 @@
   font-family: Inter, ui-sans-serif, system-ui, sans-serif;
 }
 * { box-sizing: border-box; }
+[hidden] { display: none !important; }
 body { margin: 0; min-height: 100vh; background: radial-gradient(circle at 80% 0, #173227 0, var(--bg) 42%); color: var(--ink); }
 header, main { width: min(1320px, calc(100% - 32px)); margin: 0 auto; }
 header { display: flex; align-items: center; justify-content: space-between; padding: 34px 0 24px; gap: 20px; }
