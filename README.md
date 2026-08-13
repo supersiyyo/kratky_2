@@ -1,87 +1,285 @@
 # Kratky Monitor
 
-Kratky Monitor is a direct, reproducible Raspberry Pi recording system for a
-long-running hydroponics experiment. It replaces OBS, RTMP, and NGINX with a
-persistent FFmpeg capture stage plus a detachable recorder per camera, a narrow
-local control socket, an independent sensor collector, and a browser dashboard.
+Kratky Monitor turns a Raspberry Pi into a self-contained observatory for a
+long-running hydroponics experiment. It continuously records two cameras,
+collects water and environment readings once per second, and presents live and
+historical data through a browser dashboard.
 
-The repository does not contain camera footage, sensor history, credentials, or
-machine-specific configuration.
+The supported setup is intentionally small: image a Pi, describe the hardware
+in one private JSON file, and run one provisioning command. The provisioner
+installs the application, FFmpeg, Tailscale, TigerVNC, and the required systemd
+services, then reboots and verifies the complete system.
 
-## Current profile and hardware findings
+This repository contains application code and safe example configuration. It
+does not contain recordings, sensor history, credentials, or machine-specific
+configuration.
 
-The development profile supports the installed water camera and reports the
-future environment camera as `PLANNED`. A read-only audit on 2026-07-25 found:
+## What you get
 
-- Raspberry Pi 5 on Debian 13, with FFmpeg 7.1.5.
-- Guermok adapter `index0` at `/dev/video0`; `index1` is another interface on the
-  same adapter, not a second physical camera.
-- 1920×1080 MJPEG is available at 10, 20, 25, 30, and 50 fps. There is no native
-  1 fps mode, so the FFmpeg graph selects one frame per second before splitting
-  to archive and preview.
-- Environment sensors are TSL2561 light and SCD41 CO₂/temperature/humidity over
-  I²C. The water probe is Modbus slave 1 on `/dev/ttyUSB0`, 9600 baud, using
-  registers 6, 18, 19, 21, and 30–32.
-- The legacy sensor service was in a restart storm. This service keeps device
-  failures inside its collection loop, and systemd also limits process restarts.
+- persistent 1920x1080 capture from water and environment cameras;
+- one archived frame per second in hourly H.265/MKV files;
+- live browser previews that remain available while recording is paused;
+- one-second environment and water sensor history;
+- playback with sensor readings synchronized to recorded time;
+- protected pause, resume, and restart controls;
+- automatic service startup and recovery through systemd;
+- private browser and VNC access over Tailscale; and
+- storage-reserve and age-based retention safeguards.
 
-## Architecture
+The browser dashboard runs on port `8080`. TigerVNC shares the Pi's physical
+desktop on port `5900`, bound to its Tailscale address by default.
 
-For each enabled camera, the capture manager keeps the physical V4L2 device open
-in one persistent FFmpeg capture process:
+## Supported reference system
 
-```text
-V4L2 MJPEG input
-  → fps=1
-  → 1920×1080 scale
-  → split
-      → raw frames → detachable H.265 / MKV recorder (no audio)
-      → reduced JPEG overwritten atomically in /run/kratky
+The automated provisioner is built for a Raspberry Pi running Raspberry Pi OS
+Desktop and has been exercised on a Raspberry Pi 5. The reference hardware is:
+
+- Raspberry Pi 5 with a high-endurance microSD card or other suitable storage;
+- two distinct USB video-capture adapters or USB cameras;
+- TSL2561 light sensor over I2C;
+- SCD41 CO2, temperature, and humidity sensor over I2C; and
+- a Modbus water probe on `/dev/ttyUSB0`, slave `1`, at 9600 baud.
+
+Each camera must have its own stable
+`/dev/v4l/by-id/...-video-index0` path. An adapter can expose both `index0` and
+`index1`; those are commonly two interfaces on the same physical device, not
+two cameras.
+
+The sensor collector is isolated from video capture. A disconnected or failing
+sensor is reported as unavailable and does not stop either camera.
+
+## Reproduce the complete system
+
+This is the recommended path for a new installation.
+
+### 1. Image the Pi
+
+Use Raspberry Pi Imager to install Raspberry Pi OS Desktop. In the Imager's OS
+customization settings:
+
+1. choose a username and password;
+2. configure Wi-Fi or plan to use Ethernet;
+3. enable SSH with password authentication; and
+4. set the intended hostname, such as `arcs`.
+
+Boot the Pi, wait for it to join the local network, and confirm that you can SSH
+to it. The provisioning computer and Pi only need to share the local network
+during initial setup.
+
+### 2. Connect and identify the hardware
+
+Connect both cameras and the sensors. From an SSH session, list the stable
+camera paths:
+
+```bash
+ls -l /dev/v4l/by-id/
 ```
 
-The manager owns pause state and writes status to `/run/kratky`. The Flask
-dashboard can only send `pause`, `resume`, `restart`, and `status` JSON commands
-over `/run/kratky/capture-control.sock`; it receives no sudo or systemd access.
-Pausing or performing an hourly rollover finalizes only the recorder. The
-physical camera remains open and its dashboard preview continues to refresh.
-Only a genuine capture failure or a capture-service restart reopens the V4L2 device.
-Sensor failure never stops video.
+Record the two distinct paths ending in `video-index0`. These go into the
+provisioning file in the next step.
 
-Hourly files use their actual process start time:
+### 3. Create the private provisioning file
 
-```text
-/var/lib/kratky/recordings/2026-07-25/water/water-2026-07-25_14-37-18.mkv
+Clone this repository on the computer that will configure the Pi, then copy the
+committed template:
+
+```bash
+git clone https://github.com/supersiyyo/kratky_2.git
+cd kratky_2
+cp config/provisioning-secrets.example.json provisioning-secrets.json
 ```
 
-A reconnect or manual restart creates a new timestamped file and never
-overwrites an earlier segment. Active files are excluded from downloads,
-retention deletion, and the completed-recordings list.
+On Windows PowerShell, the copy command is:
 
-Each finalized recording also receives a small `.timing.json` file containing
-its actual first- and last-frame timestamps. The sensor service writes one
-timestamped row per second to daily files under `/var/lib/kratky/sensors/`.
-The archive browser's `Review` page uses the video's playback position and
-first-frame timestamp to show the corresponding water and environment readings.
-Older recordings fall back to filename timing and the available one-minute
-sensor history.
+```powershell
+Copy-Item config/provisioning-secrets.example.json provisioning-secrets.json
+```
+
+Edit `provisioning-secrets.json` and provide:
+
+- the Pi's local address, username, and login password;
+- the desired hostname and timezone;
+- a one-off, pre-authorized, non-ephemeral Tailscale auth key;
+- a dedicated VNC password containing exactly eight characters; and
+- the two stable camera paths found above.
+
+The file is ignored by Git. Keep it only on the provisioning computer and never
+copy it to the Pi's FAT `bootfs` partition or commit it.
+
+The template enables both cameras. To intentionally build a one-camera
+development system, disable the absent camera and set its `required` value to
+`false`.
+
+### 4. Run the provisioner
+
+Python 3.11 or newer is recommended on the provisioning computer.
+
+On Linux or macOS:
+
+```bash
+python3 -m venv .provision-venv
+. .provision-venv/bin/activate
+python -m pip install -r requirements-provision.txt
+python scripts/provision.py provisioning-secrets.json
+```
+
+On Windows PowerShell:
+
+```powershell
+python -m venv .provision-venv
+.\.provision-venv\Scripts\Activate.ps1
+python -m pip install -r requirements-provision.txt
+python scripts/provision.py provisioning-secrets.json
+```
+
+The command will:
+
+1. connect to the fresh Pi over SSH;
+2. install Git and clone or fast-forward this repository;
+3. enable I2C and configure X11 desktop autologin;
+4. install and enroll Tailscale;
+5. install TigerVNC and bind it to the Tailscale IPv4 address;
+6. install Kratky Monitor and its three systemd services;
+7. create `/etc/kratky/config.yaml` from the supplied hardware profile;
+8. reboot the Pi; and
+9. verify Tailscale, VNC, both cameras, the sensor service, and the dashboard.
+
+Provisioning is idempotent. Re-running it preserves the Pi's existing Tailscale
+identity, runtime configuration, and data directories.
+
+### 5. Open and verify the system
+
+After the final verification succeeds, find the Pi in Tailscale and open:
+
+```text
+http://<tailscale-ip>:8080/
+```
+
+If Tailscale MagicDNS is enabled, the hostname may also work:
+
+```text
+http://arcs:8080/
+```
+
+Connect a VNC viewer to `<tailscale-ip>:5900` when you need the Pi's physical
+desktop. On the dashboard, verify that both cameras report `RECORDING`, both
+previews update, sensor values appear, and storage health is acceptable.
+
+## How the system works
+
+Each enabled camera is held open by one persistent FFmpeg capture process:
+
+```text
+V4L2 MJPEG camera
+  -> select 1 frame per second
+  -> scale to 1920x1080
+  -> split
+      -> detachable H.265/MKV recorder
+      -> atomic JPEG dashboard preview
+```
+
+The recorder is detached and replaced at each hourly boundary. The camera
+capture process stays open, avoiding a multi-second hardware reconnect between
+files. Pausing recording also detaches only the recorder, so the live preview
+continues to update.
+
+The independent sensor service writes one timestamped row per second. Each
+finalized recording receives a `.timing.json` sidecar containing its actual
+first- and last-frame timestamps. During review, the dashboard combines video
+playback time with that timestamp so the displayed sensor reading follows the
+moment visible in the recording.
+
+The dashboard communicates with the capture manager through a narrow Unix
+socket. It can request status, pause, resume, or restart, but it has no sudo or
+general systemd access. Its control lock prevents accidental changes; it is not
+a user-authentication boundary. Keep the dashboard on a trusted private network
+such as Tailscale.
+
+## Data and configuration
+
+Runtime data lives outside the Git checkout:
+
+```text
+/etc/kratky/config.yaml                 active device configuration
+/var/lib/kratky/recordings/YYYY-MM-DD/ hourly camera recordings
+/var/lib/kratky/sensors/                daily sensor history
+/var/lib/kratky/state/                  persistent application state
+/run/kratky/                            previews, status, and control socket
+```
+
+Start custom configurations from
+[`config/kratky.example.yaml`](config/kratky.example.yaml). Important settings
+include the timezone, stable device paths, retention period, and minimum free
+space. Production validation requires all required cameras to be enabled and a
+free-space reserve of at least 10 GiB; 10-12 GiB is recommended.
+
+Finalized recordings older than the configured retention period are eligible
+for deletion. Newer footage is never silently deleted just to recover the free
+space reserve. If usable space reaches that reserve, recorders finalize their
+current files and pause safely.
+
+## Manual installation
+
+Use this path when the operating system, Tailscale, and remote desktop are
+already configured, or when you want to manage them yourself.
+
+```bash
+git clone https://github.com/supersiyyo/kratky_2.git /home/kratky/kratky-monitor
+cd /home/kratky/kratky-monitor
+sudo ./scripts/bootstrap.sh
+```
+
+`bootstrap.sh` installs the OS and Python dependencies, creates the virtual
+environment and data directories, installs and enables the systemd units, and
+creates `/etc/kratky/config.yaml` from the example if it does not exist. Review
+that configuration carefully before allowing real capture.
+
+The script derives the service user from the checkout owner. For a different
+user or group, set `KRATKY_USER` and `KRATKY_GROUP` when invoking it.
+
+## Updating an installed Pi
+
+Normal application updates are:
+
+```bash
+cd /home/kratky/kratky-monitor
+git pull --ff-only
+sudo ./scripts/apply-update.sh
+```
+
+The updater installs locked dependencies, validates configuration, runs the
+unit tests, refreshes changed systemd units, restarts services gracefully, and
+verifies health.
 
 ## Local development
 
-Python 3.11 or newer is recommended.
+The unit suite does not require a Raspberry Pi or physical sensors. The FFmpeg
+integration test creates synthetic media and skips when compatible local FFmpeg
+support is unavailable.
+
+On Linux or macOS:
 
 ```bash
-python -m venv .venv
+python3 -m venv .venv
 . .venv/bin/activate
 python -m pip install -r requirements-dev.txt
 pytest
 ```
 
-The unit tests do not require Linux devices. The FFmpeg integration test creates
-synthetic media and skips if local FFmpeg/libx265 is unavailable.
+On Windows PowerShell:
 
-For a disposable local dashboard, copy the example config and change the
-`storage.root`, `runtime.*` directories, and camera settings to writable local
-paths. Set both cameras `enabled: false`, then:
+```powershell
+python -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python -m pip install -r requirements-dev.txt
+pytest
+```
+
+For a disposable local dashboard, copy
+[`config/kratky.example.yaml`](config/kratky.example.yaml) to
+`config/local.yaml`. Change `storage.root`, `runtime.run_dir`,
+`runtime.state_dir`, and `runtime.sensor_dir` to writable local paths, then
+disable both cameras and sensors. Start the services in separate terminals:
 
 ```bash
 export KRATKY_CONFIG="$PWD/config/local.yaml"
@@ -90,163 +288,53 @@ python -m app.sensors.service
 python -m app.dashboard.server
 ```
 
-## Raspberry Pi installation
-
-The expected checkout path is `/home/kratky/kratky-monitor`. Review
-`/etc/kratky/config.yaml` before allowing capture. On a fresh Pi:
-
-```bash
-sudo ./scripts/bootstrap.sh
-```
-
-The idempotent bootstrap installs OS packages, creates a venv with
-`--system-site-packages` (so Debian's Pi-specific `lgpio` is visible), installs
-pinned Python dependencies, preserves an existing config, installs systemd
-units, enables boot startup, and verifies health.
-
-Normal manual updates are:
-
-```bash
-cd /home/kratky/kratky-monitor
-git pull --ff-only
-sudo ./scripts/apply-update.sh
-```
-
-`apply-update.sh` validates configuration, installs locked dependencies, runs
-fast tests, updates changed units, restarts services gracefully, and verifies
-health.
-
-## Reproduce the complete Pi
-
-The complete provisioner configures the host as well as Kratky Monitor:
-
-- X11/Openbox with desktop autologin;
-- TigerVNC desktop sharing bound only to the Pi's Tailscale IPv4 address;
-- non-interactive Tailscale enrollment;
-- both stable camera paths;
-- the Kratky application, services, and post-reboot health checks.
-
-Use Raspberry Pi Imager to write Raspberry Pi OS Desktop and preconfigure the
-user, Wi-Fi, and SSH. Keep the real secrets file on the provisioning computer;
-never place it on the FAT `bootfs` partition.
-
-Create a private input file from the committed template:
-
-```bash
-cp config/provisioning-secrets.example.json provisioning-secrets.json
-```
-
-Fill in the Pi login password, a dedicated eight-character VNC password, and a one-off,
-pre-approved, non-ephemeral Tailscale auth key. Confirm the local first-boot
-address and the two `/dev/v4l/by-id/...-video-index0` camera paths. The real
-filename and `*.secrets.json` are ignored by Git.
-
-On the provisioning computer:
-
-```bash
-python -m venv .provision-venv
-. .provision-venv/bin/activate
-python -m pip install -r requirements-provision.txt
-python scripts/provision.py provisioning-secrets.json
-```
-
-On Windows PowerShell, activate with:
+In PowerShell, set the configuration path with:
 
 ```powershell
-.\.provision-venv\Scripts\Activate.ps1
-python -m pip install -r requirements-provision.txt
-python scripts\provision.py provisioning-secrets.json
+$env:KRATKY_CONFIG = (Resolve-Path config/local.yaml)
 ```
 
-The local provisioner:
+## Diagnostics and recovery
 
-1. connects to the fresh Pi over the local network;
-2. installs Git and clones or fast-forwards this repository;
-3. uploads a reduced payload that excludes the SSH password to `/dev/shm`;
-4. enables GPIO I2C and installs X11, TigerVNC, Tailscale, and Kratky;
-5. deletes the transient Pi-side payload;
-6. reboots into X11 and verifies Tailscale, VNC, both cameras, and all services.
-
-`target.allow_unknown_host_key` is intended only for the first connection to a
-freshly imaged Pi on a trusted local network. Set it to `false` after the new
-host key is known. Re-running the provisioner preserves an already enrolled
-Tailscale node identity and the persistent Kratky data directories.
-
-For a host-local recovery, securely transfer a reduced secrets file to a
-root-readable path and run:
-
-```bash
-sudo python3 scripts/provision-host.py /path/to/secrets.json --delete-secrets
-```
-
-This project deliberately selects X11 because `x0vncserver` shares the active
-physical desktop. Raspberry Pi OS currently recommends Wayland generally; the
-choice here is an explicit project compatibility decision.
-
-## Configuration
-
-Start from [`config/kratky.example.yaml`](config/kratky.example.yaml). Runtime
-configuration and data stay outside Git:
-
-```text
-/etc/kratky/config.yaml
-/var/lib/kratky/recordings/
-/var/lib/kratky/state/
-/var/lib/kratky/sensors/
-/run/kratky/
-```
-
-Production mode fails validation if a required camera is disabled or if the
-free-space reserve is below 10 GiB. Configure both distinct stable device paths
-only after the second adapter is physically audited. The production reserve
-should be 10–12 GiB; the example uses the 2 GiB development reserve.
-
-## Retention safety
-
-Finalized footage older than 30 days is deleted. Footage younger than 30 days is
-never silently deleted to regain reserve space. If usable free space reaches the
-configured reserve, workers finalize their files and pause. The dashboard shows:
-
-- recent measured daily write rate;
-- measured one-camera retention in development;
-- provisional two-camera retention (twice the measured development write rate);
-- actual combined retention in production;
-- a warning below 35 projected days.
-
-CRF is quality-based, not a storage guarantee. Select the final preset only from
-representative analog-video measurements. With OBS and the capture service
-stopped so the camera is free:
-
-```bash
-sudo -u kratky ./scripts/benchmark-camera.sh
-```
-
-This tests CRF 28/ultrafast, CRF 28/veryfast, and CRF 30/veryfast and records
-file size, FFprobe frame information, process metrics, and temperature.
-
-## Operations and acceptance
-
-Useful read-only diagnostics:
+Run these read-only checks on the Pi from the repository directory:
 
 ```bash
 ./scripts/verify-installation.sh
 ./scripts/diagnose.sh
 ```
 
-Before production, complete the six-hour and 24-hour water-camera tests, test
-hour and midnight rollover, USB removal/reconnect, FFmpeg failure, persisted
-pause across reboot, controls, sensor isolation, and low-disk behavior. On the
-fresh 128 GB card, repeat with both physical cameras and demonstrate at least 35
-days of projected combined retention while preserving 10–12 GiB.
+Useful service checks are:
 
-Do not call the deployment production-ready until `ffprobe` confirms both
-archives are 1920×1080 HEVC, exactly 1 fps, have no audio, previews remain fresh,
-and all recovery/retention tests pass.
+```bash
+systemctl status kratky-capture kratky-sensors kratky-dashboard
+journalctl -u kratky-capture -u kratky-sensors -u kratky-dashboard --since=-30min
+```
 
-## Deployment boundary
+For host-local recovery, securely transfer a reduced provisioning file to a
+root-readable path and run:
 
-Building and testing this repository does not authorize modifying the current
-Pi. Disabling OBS/NGINX, installing packages, installing units, changing
-configuration, or starting these services must be approved as a separate
-deployment step. The development camera cannot be shared with OBS during live
-capture or benchmark tests.
+```bash
+sudo python3 scripts/provision-host.py /path/to/secrets.json --delete-secrets
+```
+
+The complete provisioner deliberately selects X11/Openbox because
+`x0vncserver` shares the active physical desktop. Changing the Pi to Wayland
+requires a different remote-desktop arrangement.
+
+## Production acceptance
+
+Before relying on a new installation for an unattended experiment, exercise
+hour and midnight rollover, USB disconnect and reconnect, persisted pause after
+reboot, sensor failure isolation, low-disk behavior, and at least one extended
+recording run. Confirm with `ffprobe` that both archives are 1920x1080 HEVC at
+one frame per second with no audio and that the previews remain fresh.
+
+When tuning storage, stop other software that owns the test camera and run:
+
+```bash
+sudo -u kratky ./scripts/benchmark-camera.sh
+```
+
+The benchmark compares the supported CRF and encoder presets using real camera
+input. CRF is quality-based, so measured footage—not a theoretical bitrate—is
+the reliable basis for storage planning.
