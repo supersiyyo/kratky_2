@@ -6,6 +6,8 @@ from app.capture.recordings import Recording
 from app.timelapse.render import (
     OUTPUT_FRAMES,
     _ass_time,
+    _sensor_coverage,
+    _sensor_line,
     _write_timestamp_subtitles,
     plan_camera,
 )
@@ -107,6 +109,48 @@ def test_timestamp_subtitles_have_fixed_1080p_style(tmp_path: Path) -> None:
     contents = path.read_text(encoding="utf-8")
     assert "PlayResX: 1920" in contents
     assert "PlayResY: 1080" in contents
-    assert "Style: Timestamp,DejaVu Sans,32" in contents
-    assert ",2,40,40,120,1" in contents
+    assert "Style: Timestamp,DejaVu Sans,28" in contents
+    assert "Style: Sensor,DejaVu Sans,23" in contents
+    assert r"{\an5\pos(960,850)}2026-07-31 00:00:00" in contents
+    assert r"{\an4\pos(60,925)}{\b1}ENVIRONMENT{\b0}  Unavailable" in contents
+    assert r"{\an4\pos(60,990)}{\b1}WATER{\b0}  Unavailable" in contents
     assert "2026-07-31 00:00:00" in contents
+
+
+def test_sensor_lines_format_existing_environment_and_water_models() -> None:
+    sample = {
+        "environment": {
+            "values": {
+                "air_temperature_f": 71.784,
+                "relative_humidity_percent": 76.231,
+                "co2_ppm": 482,
+                "light_lux": 2.752,
+            }
+        },
+        "water": {
+            "values": {
+                "temperature_c": 26.0,
+                "ph": 6.61,
+                "electrical_conductivity_us_cm": 418,
+                "moisture_percent": 46.0,
+                "nitrogen_mg_kg": 29,
+                "phosphorus_mg_kg": 41,
+                "potassium_mg_kg": 83,
+            }
+        },
+    }
+
+    environment = _sensor_line(sample, "environment")
+    water = _sensor_line(sample, "water")
+
+    assert "Air 71.8 °F" in environment
+    assert "CO₂ 482 ppm" in environment
+    assert "pH 6.61" in water
+    assert "N/P/K 29/41/83 mg/kg" in water
+    assert _sensor_coverage([sample, None]) == {
+        "total_frames": 2,
+        "matched_frames": 1,
+        "environment_frames": 1,
+        "water_frames": 1,
+        "maximum_sample_age_seconds": 3,
+    }

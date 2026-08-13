@@ -210,6 +210,9 @@ full-resolution 1920x1080 camera videos and one labeled 1920x1080 side-by-side
 preview. All three are 30-second, 30 fps H.264 MP4 files with no audio. Missing
 recording time remains visible as a black **No recording available** interval;
 available footage is never stretched to conceal a gap.
+The combined preview also burns the nearest timestamped environment and water
+sensor readings into its lower panel. A missing or stale reading is labeled
+**Unavailable** instead of carrying an old value forward.
 
 Render one or more finalized dates with:
 

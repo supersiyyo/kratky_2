@@ -16,12 +16,14 @@ from zoneinfo import ZoneInfo
 from app.capture.recordings import Recording, recording_day, timing_path
 from app.capture.state import atomic_write_json
 from app.common.config import AppConfig, load_config
+from app.sensors.history import load_history
 
 
 OUTPUT_SECONDS = 30
 OUTPUT_FPS = 30
 OUTPUT_FRAMES = OUTPUT_SECONDS * OUTPUT_FPS
 MAX_NEAREST_GAP_SECONDS = 15
+MAX_SENSOR_AGE_SECONDS = 3
 INDIVIDUAL_WIDTH = 1920
 INDIVIDUAL_HEIGHT = 1080
 COMBINED_WIDTH = 1920
@@ -152,6 +154,7 @@ def render_day(
         raise TimelapseError(f"output already exists: {names}; use --force to replace")
 
     day_start = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone)
+    sensor_samples = _sensor_timeline(config.runtime.sensor_dir, day_start)
     plans: dict[str, CameraPlan] = {}
     for camera in CAMERAS:
         recordings = value.cameras[camera].recordings
@@ -170,7 +173,7 @@ def render_day(
             part.replace(outputs[camera])
 
         subtitles = temporary / "timestamps.ass"
-        _write_timestamp_subtitles(subtitles, day_start)
+        _write_timestamp_subtitles(subtitles, day_start, sensor_samples)
         combined_part = destination / f".{outputs['combined'].name}.part"
         combined_part.unlink(missing_ok=True)
         _render_combined(
@@ -206,6 +209,7 @@ def render_day(
             }
             for name in CAMERAS
         },
+        "sensor_overlay": _sensor_coverage(sensor_samples),
         "outputs": {
             name: _output_metadata(path, ffprobe)
             for name, path in outputs.items()
@@ -226,6 +230,7 @@ def render_combined_only(
 ) -> dict[str, Any]:
     timezone = ZoneInfo(config.deployment.timezone)
     day_start = datetime.strptime(day, "%Y-%m-%d").replace(tzinfo=timezone)
+    sensor_samples = _sensor_timeline(config.runtime.sensor_dir, day_start)
     destination = (output_root or timelapse_root(config)) / day
     water = destination / f"water-timelapse-{day}.mp4"
     environment = destination / f"environment-timelapse-{day}.mp4"
@@ -239,7 +244,7 @@ def render_combined_only(
     with tempfile.TemporaryDirectory(prefix=".combined-", dir=destination) as raw_temp:
         temporary = Path(raw_temp)
         subtitles = temporary / "timestamps.ass"
-        _write_timestamp_subtitles(subtitles, day_start)
+        _write_timestamp_subtitles(subtitles, day_start, sensor_samples)
         part = destination / f".{combined.name}.part"
         part.unlink(missing_ok=True)
         _render_combined(water, environment, subtitles, day, part, ffmpeg)
@@ -252,6 +257,7 @@ def render_combined_only(
     except (OSError, TypeError, json.JSONDecodeError):
         summary = {"schema_version": 1, "date": day}
     summary.setdefault("outputs", {})["combined"] = metadata
+    summary["sensor_overlay"] = _sensor_coverage(sensor_samples)
     summary["updated_at"] = datetime.now(timezone).isoformat()
     atomic_write_json(summary_path, summary, mode=0o644)
     return metadata
@@ -421,8 +427,69 @@ def _render_combined(
     )
 
 
-def _write_timestamp_subtitles(path: Path, day_start: datetime) -> None:
+def _sensor_timeline(
+    sensor_directory: Path,
+    day_start: datetime,
+) -> list[dict[str, Any] | None]:
     sample_step = timedelta(days=1) / OUTPUT_FRAMES
+    targets = [day_start + sample_step * index for index in range(OUTPUT_FRAMES)]
+    history = load_history(
+        sensor_directory,
+        day_start - timedelta(seconds=MAX_SENSOR_AGE_SECONDS),
+        day_start + timedelta(days=1, seconds=MAX_SENSOR_AGE_SECONDS),
+    )
+    parsed = [
+        (datetime.fromisoformat(str(sample["timestamp"])), sample)
+        for sample in history
+    ]
+    result: list[dict[str, Any] | None] = []
+    cursor = 0
+    for target in targets:
+        while cursor + 1 < len(parsed) and parsed[cursor + 1][0] <= target:
+            cursor += 1
+        candidates = parsed[max(0, cursor - 1):cursor + 2]
+        nearest = min(
+            candidates,
+            key=lambda item: abs((item[0] - target).total_seconds()),
+            default=None,
+        )
+        if (
+            nearest is None
+            or abs((nearest[0] - target).total_seconds()) > MAX_SENSOR_AGE_SECONDS
+        ):
+            result.append(None)
+        else:
+            result.append(nearest[1])
+    return result
+
+
+def _sensor_coverage(
+    samples: Sequence[dict[str, Any] | None],
+) -> dict[str, int]:
+    return {
+        "total_frames": len(samples),
+        "matched_frames": sum(sample is not None for sample in samples),
+        "environment_frames": sum(
+            _section_available(sample, "environment") for sample in samples
+        ),
+        "water_frames": sum(
+            _section_available(sample, "water") for sample in samples
+        ),
+        "maximum_sample_age_seconds": MAX_SENSOR_AGE_SECONDS,
+    }
+
+
+def _write_timestamp_subtitles(
+    path: Path,
+    day_start: datetime,
+    sensor_samples: Sequence[dict[str, Any] | None] | None = None,
+) -> None:
+    sample_step = timedelta(days=1) / OUTPUT_FRAMES
+    samples = list(sensor_samples or [None] * OUTPUT_FRAMES)
+    if len(samples) != OUTPUT_FRAMES:
+        raise TimelapseError(
+            f"sensor timeline has {len(samples)} frames; expected {OUTPUT_FRAMES}"
+        )
     lines = [
         "[Script Info]",
         "ScriptType: v4.00+",
@@ -439,22 +506,77 @@ def _write_timestamp_subtitles(path: Path, day_start: datetime) -> None:
             "Alignment, MarginL, MarginR, MarginV, Encoding"
         ),
         (
-            "Style: Timestamp,DejaVu Sans,32,&H00FFFFFF,&H00FFFFFF,"
-            "&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,40,40,120,1"
+            "Style: Timestamp,DejaVu Sans,28,&H00FFFFFF,&H00FFFFFF,"
+            "&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,2,0,2,40,40,0,1"
+        ),
+        (
+            "Style: Sensor,DejaVu Sans,23,&H00E8F0EC,&H00E8F0EC,"
+            "&H00000000,&H00000000,0,0,0,0,100,100,0,0,1,1,0,4,40,40,0,1"
         ),
         "",
         "[Events]",
         "Format: Layer, Start, End, Style, Name, MarginL, MarginR, MarginV, Effect, Text",
     ]
-    for index in range(OUTPUT_FRAMES):
+    for index, sample in enumerate(samples):
         timestamp = (day_start + sample_step * index).strftime(
             "%Y-%m-%d %H:%M:%S"
         )
+        start = _ass_time(index / OUTPUT_FPS)
+        end = _ass_time((index + 1) / OUTPUT_FPS)
         lines.append(
-            f"Dialogue: 0,{_ass_time(index / OUTPUT_FPS)},"
-            f"{_ass_time((index + 1) / OUTPUT_FPS)},Timestamp,,0,0,0,,{timestamp}"
+            f"Dialogue: 0,{start},{end},Timestamp,,0,0,0,,"
+            f"{{\\an5\\pos(960,850)}}{timestamp}"
+        )
+        lines.append(
+            f"Dialogue: 0,{start},{end},Sensor,,0,0,0,,"
+            f"{{\\an4\\pos(60,925)}}{_sensor_line(sample, 'environment')}"
+        )
+        lines.append(
+            f"Dialogue: 0,{start},{end},Sensor,,0,0,0,,"
+            f"{{\\an4\\pos(60,990)}}{_sensor_line(sample, 'water')}"
         )
     path.write_text("\n".join(lines), encoding="utf-8")
+
+
+def _sensor_line(sample: dict[str, Any] | None, section: str) -> str:
+    label = section.upper()
+    if not _section_available(sample, section):
+        return f"{{\\b1}}{label}{{\\b0}}  Unavailable"
+    values = sample[section]["values"]
+    if section == "environment":
+        readings = (
+            f"Air {_shown(values.get('air_temperature_f'), 1)} °F  |  "
+            f"Humidity {_shown(values.get('relative_humidity_percent'), 1)}%  |  "
+            f"CO₂ {_shown(values.get('co2_ppm'), 0)} ppm  |  "
+            f"Light {_shown(values.get('light_lux'), 1)} lx"
+        )
+    else:
+        readings = (
+            f"Temp {_shown(values.get('temperature_c'), 1)} °C  |  "
+            f"pH {_shown(values.get('ph'), 2)}  |  "
+            f"EC {_shown(values.get('electrical_conductivity_us_cm'), 0)} µS/cm  |  "
+            f"Moisture {_shown(values.get('moisture_percent'), 1)}%  |  "
+            "N/P/K "
+            f"{_shown(values.get('nitrogen_mg_kg'), 0)}/"
+            f"{_shown(values.get('phosphorus_mg_kg'), 0)}/"
+            f"{_shown(values.get('potassium_mg_kg'), 0)} mg/kg"
+        )
+    return f"{{\\b1}}{label}{{\\b0}}  {readings}"
+
+
+def _section_available(sample: dict[str, Any] | None, section: str) -> bool:
+    if not sample:
+        return False
+    values = sample.get(section, {}).get("values", {})
+    return any(value is not None for value in values.values())
+
+
+def _shown(value: object, decimals: int) -> str:
+    if not isinstance(value, (int, float)):
+        return "—"
+    if decimals == 0:
+        return str(round(value))
+    return f"{value:.{decimals}f}"
 
 
 def _ass_time(seconds: float) -> str:
