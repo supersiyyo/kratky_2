@@ -18,3 +18,15 @@ def test_installation_verification_retries_dashboard_startup() -> None:
     ).read_text(encoding="utf-8")
 
     assert 'check_retry "dashboard responds" 15 1' in script
+
+
+def test_offload_service_is_low_priority_and_owns_verified_cleanup() -> None:
+    unit = (
+        Path(__file__).parents[2] / "systemd" / "kratky-offload.service"
+    ).read_text(encoding="utf-8")
+
+    assert "Nice=10" in unit
+    assert "IOSchedulingClass=idle" in unit
+    assert "app.offload.service" in unit
+    assert "/var/lib/kratky/recordings" in unit
+    assert "ExecCondition=" in unit

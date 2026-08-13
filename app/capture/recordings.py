@@ -12,6 +12,8 @@ RECORDING_RE = re.compile(
     r"^(?P<camera>[a-zA-Z0-9_-]+)-(?P<date>\d{4}-\d{2}-\d{2})_"
     r"(?P<time>\d{2}-\d{2}-\d{2})(?:-(?P<suffix>\d+))?\.mkv$"
 )
+DAY_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
+EXPECTED_CAMERAS = ("water", "environment")
 
 
 def recording_path(root: Path, camera: str, now: datetime) -> Path:
@@ -48,6 +50,67 @@ class Recording:
             "end": self.end.isoformat(),
             "size": self.size,
         }
+
+
+@dataclass(frozen=True, slots=True)
+class CameraDay:
+    camera: str
+    recordings: tuple[Recording, ...]
+    active_paths: tuple[Path, ...]
+
+    @property
+    def total_bytes(self) -> int:
+        return sum(item.size for item in self.recordings)
+
+
+@dataclass(frozen=True, slots=True)
+class RecordingDay:
+    day: str
+    cameras: dict[str, CameraDay]
+    sensor_path: Path | None
+
+    @property
+    def recordings(self) -> tuple[Recording, ...]:
+        return tuple(
+            item
+            for name in EXPECTED_CAMERAS
+            for item in self.cameras[name].recordings
+        )
+
+    @property
+    def total_bytes(self) -> int:
+        sensor_bytes = self.sensor_path.stat().st_size if self.sensor_path else 0
+        return sum(camera.total_bytes for camera in self.cameras.values()) + sensor_bytes
+
+    @property
+    def has_active_recording(self) -> bool:
+        return any(camera.active_paths for camera in self.cameras.values())
+
+    @property
+    def missing_components(self) -> tuple[str, ...]:
+        missing = [
+            f"{name} recordings"
+            for name in EXPECTED_CAMERAS
+            if not self.cameras[name].recordings
+        ]
+        if self.sensor_path is None:
+            missing.append("sensor history")
+        missing_timing = sum(
+            not timing_path(recording.path).is_file()
+            for recording in self.recordings
+        )
+        if missing_timing:
+            missing.append(f"timing metadata for {missing_timing} recording(s)")
+        return tuple(missing)
+
+    @property
+    def complete(self) -> bool:
+        return not self.has_active_recording and not self.missing_components
+
+    @property
+    def downloadable(self) -> bool:
+        # Partial historical days remain exportable so older data is never stranded.
+        return bool(self.recordings) and not self.has_active_recording
 
 
 def parse_start(path: Path, timezone: ZoneInfo) -> datetime | None:
@@ -102,3 +165,77 @@ def list_recordings(
         stat = path.stat()
         items.append(Recording(path.parent.name, path, start, end, stat.st_size))
     return sorted(items, key=lambda item: (item.start, item.camera))
+
+
+def recording_day(
+    root: Path,
+    sensor_directory: Path,
+    timezone: ZoneInfo,
+    day: str,
+    active_paths: set[Path] | None = None,
+) -> RecordingDay | None:
+    if not DAY_RE.fullmatch(day):
+        return None
+    try:
+        datetime.strptime(day, "%Y-%m-%d")
+    except ValueError:
+        return None
+
+    active = tuple(path for path in (active_paths or set()) if _path_day(path) == day)
+    items = list_recordings(root, timezone, day, set(active))
+    cameras = {
+        name: CameraDay(
+            camera=name,
+            recordings=tuple(item for item in items if item.camera == name),
+            active_paths=tuple(path for path in active if path.parent.name == name),
+        )
+        for name in EXPECTED_CAMERAS
+    }
+    sensor_path = sensor_directory / f"sensors-{day}.csv"
+    if not sensor_path.is_file():
+        sensor_path = None
+    if not items and not active and sensor_path is None:
+        return None
+    return RecordingDay(day, cameras, sensor_path)
+
+
+def list_recording_days(
+    root: Path,
+    sensor_directory: Path,
+    timezone: ZoneInfo,
+    active_paths: set[Path] | None = None,
+) -> list[RecordingDay]:
+    days: set[str] = set()
+    try:
+        days.update(path.name for path in root.iterdir() if path.is_dir())
+    except OSError:
+        pass
+    try:
+        days.update(
+            match.group(1)
+            for path in sensor_directory.glob("sensors-????-??-??.csv")
+            if (match := re.fullmatch(r"sensors-(\d{4}-\d{2}-\d{2})\.csv", path.name))
+        )
+    except OSError:
+        pass
+    days.update(
+        day
+        for path in (active_paths or set())
+        if (day := _path_day(path)) is not None
+    )
+    result = [
+        value
+        for day in days
+        if (value := recording_day(
+            root, sensor_directory, timezone, day, active_paths
+        )) is not None
+    ]
+    return sorted(result, key=lambda item: item.day, reverse=True)
+
+
+def _path_day(path: Path) -> str | None:
+    try:
+        day = path.parent.parent.name
+    except IndexError:
+        return None
+    return day if DAY_RE.fullmatch(day) else None

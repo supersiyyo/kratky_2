@@ -204,7 +204,9 @@ class CaptureManager:
 
     def _retention(self, now: datetime) -> None:
         active = self.active_paths()
-        removed = prune_expired(
+        # When verified offload is enabled, it exclusively owns deletion.
+        # Age-based retention cannot prove that a remote copy exists.
+        removed = [] if self.config.offload.enabled else prune_expired(
             self.config.storage.root,
             self.config.storage.retention_days,
             active,

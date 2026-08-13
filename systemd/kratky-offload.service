@@ -1,0 +1,30 @@
+[Unit]
+Description=Kratky verified Google Drive offload
+After=network-online.target kratky-capture.service kratky-sensors.service
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=kratky
+Group=kratky
+WorkingDirectory=/home/kratky/kratky-monitor
+Environment=KRATKY_CONFIG=/etc/kratky/config.yaml
+ExecCondition=/home/kratky/kratky-monitor/.venv/bin/python -c "from app.common.config import load_config; raise SystemExit(0 if load_config().offload.enabled else 1)"
+ExecStart=/home/kratky/kratky-monitor/.venv/bin/python -m app.offload.service
+Restart=on-failure
+RestartSec=15
+TimeoutStopSec=30
+Nice=10
+IOSchedulingClass=idle
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=read-only
+ReadWritePaths=/run/kratky /var/lib/kratky/state /var/lib/kratky/recordings
+StandardOutput=journal
+StandardError=journal
+LogRateLimitIntervalSec=30
+LogRateLimitBurst=60
+
+[Install]
+WantedBy=multi-user.target

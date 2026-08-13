@@ -21,10 +21,13 @@ configuration.
 - live browser previews that remain available while recording is paused;
 - one-second environment and water sensor history;
 - playback with sensor readings synchronized to recorded time;
+- downloadable day-based archives for both cameras and sensor history;
+- 1080p individual and combined daily timelapses with sensor overlays;
+- optional checksum-verified Google Drive offload;
 - protected pause, resume, and restart controls;
 - automatic service startup and recovery through systemd;
 - private browser and VNC access over Tailscale; and
-- storage-reserve and age-based retention safeguards.
+- storage-reserve and verified-cleanup safeguards.
 
 The browser dashboard runs on port `8080`. TigerVNC shares the Pi's physical
 desktop on port `5900`, bound to its Tailscale address by default.
@@ -139,7 +142,7 @@ The command will:
 3. enable I2C and configure X11 desktop autologin;
 4. install and enroll Tailscale;
 5. install TigerVNC and bind it to the Tailscale IPv4 address;
-6. install Kratky Monitor and its three systemd services;
+6. install Kratky Monitor and its systemd services;
 7. create `/etc/kratky/config.yaml` from the supplied hardware profile;
 8. reboot the Pi; and
 9. verify Tailscale, VNC, both cameras, the sensor service, and the dashboard.
@@ -203,20 +206,88 @@ Runtime data lives outside the Git checkout:
 /etc/kratky/config.yaml                 active device configuration
 /var/lib/kratky/recordings/YYYY-MM-DD/ hourly camera recordings
 /var/lib/kratky/sensors/                daily sensor history
+/var/lib/kratky/timelapses/YYYY-MM-DD/ daily timelapse outputs
 /var/lib/kratky/state/                  persistent application state
 /run/kratky/                            previews, status, and control socket
 ```
 
 Start custom configurations from
 [`config/kratky.example.yaml`](config/kratky.example.yaml). Important settings
-include the timezone, stable device paths, retention period, and minimum free
-space. Production validation requires all required cameras to be enabled and a
-free-space reserve of at least 10 GiB; 10-12 GiB is recommended.
+include the timezone, stable device paths, retention period, minimum free space,
+and optional offload policy. Production validation requires all required
+cameras to be enabled and a free-space reserve of at least 10 GiB; 10-12 GiB is
+recommended.
 
-Finalized recordings older than the configured retention period are eligible
-for deletion. Newer footage is never silently deleted just to recover the free
-space reserve. If usable space reaches that reserve, recorders finalize their
-current files and pause safely.
+## Daily archives and timelapses
+
+The dashboard's Recordings view groups finalized footage and sensor history by
+calendar day. A day archive streams directly as ZIP64 without constructing a
+second full copy on the Pi.
+
+The timelapse renderer uses recording timing metadata to sample a fixed
+midnight-to-midnight timeline. Each day produces two clean, full-resolution
+1920x1080 camera videos and one labeled 1920x1080 side-by-side preview. All
+three are 30-second, 30 fps H.264 MP4 files with no audio. The combined preview
+also displays the nearest timestamped environment and water readings. Missing
+footage and unavailable readings remain explicit rather than being concealed.
+
+Render one or more finalized dates with:
+
+```bash
+cd /home/kratky/kratky-monitor
+.venv/bin/python -m app.timelapse.render 2026-07-31 2026-08-01
+```
+
+Outputs are written under `/var/lib/kratky/timelapses/YYYY-MM-DD/` with a
+`daily-summary.json` containing coverage, dimensions, duration, frame count,
+file size, MD5, and sensor-overlay statistics. Existing outputs are preserved
+unless `--force` is supplied. Use `--combined-only` to rebuild the presentation
+layout from existing individual timelapses.
+
+## Google Drive offload
+
+The optional offload service transfers finalized raw camera recordings, timing
+sidecars, daily sensor history, and a manifest to a user-selected Google Drive
+account. Uploads are resumable, and each file must match the remote byte size
+and Google-reported MD5 checksum before the ledger marks it verified.
+
+One-time Google setup:
+
+1. Create or select a Google Cloud project and enable the Google Drive API.
+2. Configure the OAuth consent screen. For an external app in testing, add each
+   connecting Google account as a test user.
+3. Create an OAuth client for **TVs and Limited Input devices** and download its
+   JSON credential file.
+4. Open **Storage & Offload** in the dashboard and upload the JSON once.
+5. Connect the desired Google account and create the project folder through the
+   dashboard.
+6. Set `offload.enabled: true` only after automatic transfer and cleanup are
+   approved for that deployment.
+
+The application requests only the `drive.file` scope and creates its own
+project folder with `raw`, `timelapse-daily`, and `final` subfolders. It does
+not receive general access to the rest of the user's Drive.
+
+Automatic cleanup is day-based. If a source is active, missing, changes size,
+fails upload, or does not match the remote size and MD5, the local recordings
+remain untouched. Once all expected raw sources and the manifest are verified,
+the service may remove only the local `.mkv` files for that date. Timing files,
+sensor history, manifests, timelapses, summaries, and ledger receipts remain on
+the Pi.
+
+Daily timelapse rendering and upload are currently explicit operations; the
+background offload service does not yet orchestrate rendering before raw cleanup.
+Keep automatic cleanup disabled when the deployment requires that combined
+render-upload-delete sequence. This is the next automation milestone.
+
+## Retention safety
+
+Without Google Drive offload, finalized footage older than the configured
+retention period is eligible for deletion. With offload enabled, age-based
+deletion is disabled and only remotely verified dates are cleaned up. Footage
+is never silently deleted just to recover the free-space reserve. If usable
+space reaches that reserve, recorders finalize their current files and pause
+safely; they require an explicit resume after space is restored.
 
 ## Manual installation
 
@@ -306,8 +377,8 @@ Run these read-only checks on the Pi from the repository directory:
 Useful service checks are:
 
 ```bash
-systemctl status kratky-capture kratky-sensors kratky-dashboard
-journalctl -u kratky-capture -u kratky-sensors -u kratky-dashboard --since=-30min
+systemctl status kratky-capture kratky-sensors kratky-dashboard kratky-offload
+journalctl -u kratky-capture -u kratky-sensors -u kratky-dashboard -u kratky-offload --since=-30min
 ```
 
 For host-local recovery, securely transfer a reduced provisioning file to a
@@ -325,9 +396,10 @@ requires a different remote-desktop arrangement.
 
 Before relying on a new installation for an unattended experiment, exercise
 hour and midnight rollover, USB disconnect and reconnect, persisted pause after
-reboot, sensor failure isolation, low-disk behavior, and at least one extended
-recording run. Confirm with `ffprobe` that both archives are 1920x1080 HEVC at
-one frame per second with no audio and that the previews remain fresh.
+reboot, sensor failure isolation, low-disk behavior, daily archive download,
+timelapse rendering, and Drive verification using representative data. Confirm
+with `ffprobe` that both archives are 1920x1080 HEVC at one frame per second
+with no audio and that the previews remain fresh.
 
 When tuning storage, stop other software that owns the test camera and run:
 

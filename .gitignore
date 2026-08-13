@@ -20,3 +20,5 @@ provisioning-secrets.json
 build/
 dist/
 *.egg-info/
+docs/
+imgs/

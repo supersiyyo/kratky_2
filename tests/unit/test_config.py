@@ -60,3 +60,16 @@ def test_production_enforces_reserve(tmp_path: Path) -> None:
     raw["deployment"]["mode"] = "production"
     with pytest.raises(ConfigError, match="at least 10"):
         config_from_mapping(raw)
+
+
+def test_offload_can_be_enabled_before_dashboard_oauth_setup(tmp_path: Path) -> None:
+    raw = valid_mapping(tmp_path)
+    raw["offload"] = {"enabled": True}
+    assert config_from_mapping(raw).offload.enabled is True
+
+
+def test_legacy_oauth_config_requires_id_and_secret_together(tmp_path: Path) -> None:
+    raw = valid_mapping(tmp_path)
+    raw["offload"] = {"oauth_client_id": "example.apps.googleusercontent.com"}
+    with pytest.raises(ConfigError, match="configured together"):
+        config_from_mapping(raw)
