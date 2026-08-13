@@ -3,67 +3,36 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Recordings · Kratky monitor</title>
+  <title>Timelapses · Kratky monitor</title>
   <link rel="stylesheet" href="{{ url_for('static', filename='dashboard.css') }}">
 </head>
 <body>
   <header>
-    <div><p class="eyebrow">Archive browser</p><h1>Recordings by day</h1></div>
+    <div><p class="eyebrow">Experiment history</p><h1>Completed timelapses</h1></div>
     <a class="button primary" href="{{ url_for('index') }}">Live dashboard</a>
   </header>
   <main>
     <section class="panel archive-panel">
       <div class="card-heading">
         <div>
-          <h2>Daily data packages</h2>
-          <p>Each day keeps Water video, Environment video, and sensor history together.</p>
+          <h2>Water, environment, and sensor data together</h2>
+          <p>Preview or download each completed daily video.</p>
         </div>
       </div>
       <div class="day-list">
         {% for day in days %}
-        <article class="day-card">
-          <div class="day-heading">
-            <div>
-              <h2><a href="{{ url_for('recording_day_detail', day=day.day) }}">{{ day.day }}</a></h2>
-              <small>{{ (day.total_bytes / 1073741824)|round(2) }} GiB total</small>
-            </div>
-            {% if day.has_active_recording %}
-            <span class="status">RECORDING</span>
-            {% elif day.complete %}
-            <span class="status">COMPLETE</span>
-            {% else %}
-            <span class="status warning">INCOMPLETE</span>
-            {% endif %}
+        <article class="day-card timelapse-day-card">
+          <div>
+            <h2><a href="{{ url_for('recording_day_detail', day=day.day) }}">{{ day.day }}</a></h2>
+            <small>{{ day.filename }} · {{ (day.size / 1048576)|round(1) }} MiB</small>
           </div>
-          <div class="day-components">
-            {% for camera_name in expected_cameras %}
-            {% set camera = day.cameras[camera_name] %}
-            <div>
-              <span>{{ camera_name|capitalize }}</span>
-              <strong>{{ camera.recordings|length }} recording{% if camera.recordings|length != 1 %}s{% endif %}</strong>
-              <small>{{ (camera.total_bytes / 1048576)|round(1) }} MiB{% if camera.active_paths %} · recording now{% endif %}</small>
-            </div>
-            {% endfor %}
-            <div>
-              <span>Sensor data</span>
-              <strong>{% if day.sensor_path %}Included{% else %}Missing{% endif %}</strong>
-              <small>{% if day.sensor_path %}{{ day.sensor_path.name }}{% else %}No daily CSV{% endif %}</small>
-            </div>
-          </div>
-          {% if day.missing_components %}
-          <p class="day-warning">Missing: {{ day.missing_components|join(', ') }}. Any available finalized data can still be exported.</p>
-          {% endif %}
           <div class="day-actions">
-            <a class="button" href="{{ url_for('recording_day_detail', day=day.day) }}">View day</a>
-            {% if day.downloadable %}
-            <a class="button primary" href="{{ url_for('recording_day_archive', day=day.day) }}">{% if day.complete %}Download complete day{% else %}Download available data{% endif %}</a>
-            {% elif day.has_active_recording %}
-            <span class="download-note">Download available after recording stops.</span>
-            {% endif %}
+            <a class="button" href="{{ url_for('recording_day_detail', day=day.day) }}">Preview</a>
+            <a class="button primary" download href="{{ url_for('recording_day_timelapse', day=day.day) }}">Download timelapse</a>
           </div>
         </article>
         {% else %}
-        <p class="empty">No recording days are available yet.</p>
+        <p class="empty">No completed timelapses are available yet.</p>
         {% endfor %}
       </div>
     </section>

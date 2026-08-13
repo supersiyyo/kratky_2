@@ -3,32 +3,22 @@ from __future__ import annotations
 import json
 import os
 import socket
-import threading
-from datetime import datetime, timedelta
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo
 
 from flask import (
     Flask,
-    Response,
     abort,
     jsonify,
     redirect,
     render_template,
     request,
     send_file,
-    stream_with_context,
     url_for,
 )
 
-from app.capture.archive import stream_day_archive
-from app.capture.recordings import (
-    EXPECTED_CAMERAS,
-    list_recording_days,
-    recording_day,
-    recording_timing,
-)
 from app.capture.state import atomic_write_json, read_json
 from app.common.config import AppConfig, load_config
 from app.common.paths import (
@@ -37,8 +27,7 @@ from app.common.paths import (
     preview_path,
     sensor_state_path,
 )
-from app.sensors.history import load_history
-from app.timelapse.render import combined_timelapse_path
+from app.timelapse.render import combined_timelapse_path, timelapse_root
 from app.offload.google_drive import (
     AuthorizationPending,
     CredentialStore,
@@ -90,7 +79,6 @@ def create_app(config: AppConfig | None = None) -> Flask:
     app = Flask(__name__)
     app.config["KRATKY_CONFIG"] = app_config
     timezone = ZoneInfo(app_config.deployment.timezone)
-    archive_slot = threading.BoundedSemaphore(1)
 
     def status_payload() -> dict[str, Any]:
         capture = read_json(
@@ -318,77 +306,46 @@ def create_app(config: AppConfig | None = None) -> Flask:
     def recordings():  # type: ignore[no-untyped-def]
         if selected_day := request.args.get("day"):
             return redirect(url_for("recording_day_detail", day=selected_day))
-        capture = status_payload()["capture"]
-        days = list_recording_days(
-            app_config.storage.root,
-            app_config.runtime.sensor_dir,
-            timezone,
-            _active_paths(capture),
-        )
+        days: list[dict[str, Any]] = []
+        root = timelapse_root(app_config)
+        if root.is_dir():
+            for directory in sorted(root.iterdir(), reverse=True):
+                if not directory.is_dir() or not _valid_day(directory.name):
+                    continue
+                combined = combined_timelapse_path(app_config, directory.name)
+                if not combined.is_file():
+                    continue
+                days.append(
+                    {
+                        "day": directory.name,
+                        "filename": combined.name,
+                        "size": combined.stat().st_size,
+                    }
+                )
         return render_template(
             "recording_days.html",
             days=days,
-            expected_cameras=EXPECTED_CAMERAS,
         )
 
     @app.get("/recordings/<day>")
     def recording_day_detail(day: str):  # type: ignore[no-untyped-def]
-        capture = status_payload()["capture"]
-        selected = recording_day(
-            app_config.storage.root,
-            app_config.runtime.sensor_dir,
-            timezone,
-            day,
-            _active_paths(capture),
-        )
-        if selected is None:
+        if not _valid_day(day):
             abort(404)
-        items = selected.recordings
-        item_dicts: list[dict[str, Any]] = []
-        previous_end: dict[str, datetime] = {}
-        for item in items:
-            rendered = item.to_dict(app_config.storage.root)
-            gap = (
-                max(0.0, (item.start - previous_end[item.camera]).total_seconds())
-                if item.camera in previous_end
-                else 0.0
-            )
-            rendered["gap_before_seconds"] = gap if gap > 5 else 0
-            rendered["restart_boundary"] = bool(item.start.minute or item.start.second)
-            previous_end[item.camera] = item.end
-            item_dicts.append(rendered)
-        active = [
-            camera for camera in capture.get("cameras", {}).values()
-            if camera.get("current_recording")
-            and Path(camera["current_recording"]).parent.parent.name == day
-        ]
         combined = combined_timelapse_path(app_config, day)
-        timelapse = (
-            {
-                "filename": combined.name,
-                "size": combined.stat().st_size,
-            }
-            if combined.is_file()
-            else None
-        )
+        if not combined.is_file():
+            abort(404)
         return render_template(
             "recordings.html",
-            day=selected,
-            recordings=item_dicts,
-            active=active,
-            expected_cameras=EXPECTED_CAMERAS,
-            timelapse=timelapse,
+            day=day,
+            timelapse={
+                "filename": combined.name,
+                "size": combined.stat().st_size,
+            },
         )
 
     @app.get("/recordings/timelapse/<day>/combined.mp4")
     def recording_day_timelapse(day: str):  # type: ignore[no-untyped-def]
-        selected = recording_day(
-            app_config.storage.root,
-            app_config.runtime.sensor_dir,
-            timezone,
-            day,
-        )
-        if selected is None:
+        if not _valid_day(day):
             abort(404)
         path = combined_timelapse_path(app_config, day)
         if not path.is_file():
@@ -400,109 +357,14 @@ def create_app(config: AppConfig | None = None) -> Flask:
             download_name=path.name,
         )
 
-    @app.get("/recordings/archive/<day>.zip")
-    def recording_day_archive(day: str):  # type: ignore[no-untyped-def]
-        capture = status_payload()["capture"]
-        selected = recording_day(
-            app_config.storage.root,
-            app_config.runtime.sensor_dir,
-            timezone,
-            day,
-            _active_paths(capture),
-        )
-        if selected is None or not selected.recordings:
-            abort(404)
-        if selected.has_active_recording:
-            abort(409, "the day still contains an active recording")
-        if not archive_slot.acquire(blocking=False):
-            abort(429, "another daily archive is already downloading")
-
-        released = False
-        release_lock = threading.Lock()
-
-        def release_archive_slot() -> None:
-            nonlocal released
-            with release_lock:
-                if released:
-                    return
-                released = True
-                archive_slot.release()
-
-        stream = stream_day_archive(
-            selected,
-            app_config.storage.root,
-            app_config.runtime.sensor_dir,
-            app_config.deployment.timezone,
-            str(capture.get("version") or "unknown"),
-        )
-
-        def guarded_stream():  # type: ignore[no-untyped-def]
-            try:
-                yield from stream
-            finally:
-                release_archive_slot()
-
-        response = Response(
-            stream_with_context(guarded_stream()),
-            mimetype="application/zip",
-        )
-        response.headers["Content-Disposition"] = (
-            f'attachment; filename="kratky-{day}.zip"'
-        )
-        response.headers["Cache-Control"] = "no-store"
-        response.headers["X-Content-Type-Options"] = "nosniff"
-        response.call_on_close(release_archive_slot)
-        return response
-
-    @app.get("/recordings/file/<path:relative>")
-    def recording_file(relative: str):  # type: ignore[no-untyped-def]
-        root = app_config.storage.root.resolve()
-        path = (root / relative).resolve()
-        try:
-            path.relative_to(root)
-        except ValueError:
-            abort(404)
-        capture = status_payload()["capture"]
-        if path in {item.resolve() for item in _active_paths(capture)}:
-            abort(409, "recording is still active")
-        if not path.is_file() or path.suffix.lower() != ".mkv":
-            abort(404)
-        return send_file(path, mimetype="video/x-matroska", conditional=True)
-
-    @app.get("/recordings/review/<path:relative>")
-    def recording_review(relative: str):  # type: ignore[no-untyped-def]
-        root = app_config.storage.root.resolve()
-        path = (root / relative).resolve()
-        try:
-            path.relative_to(root)
-        except ValueError:
-            abort(404)
-        capture = status_payload()["capture"]
-        if path in {item.resolve() for item in _active_paths(capture)}:
-            abort(409, "recording is still active")
-        if not path.is_file() or path.suffix.lower() != ".mkv":
-            abort(404)
-        timing = recording_timing(path, timezone)
-        if timing is None:
-            abort(404)
-        first_frame_at, last_frame_at, approximate = timing
-        samples = load_history(
-            app_config.runtime.sensor_dir,
-            first_frame_at - timedelta(seconds=1),
-            last_frame_at + timedelta(seconds=1),
-        )
-        return render_template(
-            "review.html",
-            filename=path.name,
-            relative=path.relative_to(root).as_posix(),
-            first_frame_at=first_frame_at.isoformat(),
-            last_frame_at=last_frame_at.isoformat(),
-            timezone=app_config.deployment.timezone,
-            approximate=approximate,
-            samples=samples,
-        )
-
     return app
+
+
+def _valid_day(value: str) -> bool:
+    try:
+        return datetime.strptime(value, "%Y-%m-%d").strftime("%Y-%m-%d") == value
+    except ValueError:
+        return False
 
 
 def main() -> None:

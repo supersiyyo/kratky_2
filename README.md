@@ -20,8 +20,7 @@ configuration.
 - one archived frame per second in hourly H.265/MKV files;
 - live browser previews that remain available while recording is paused;
 - one-second environment and water sensor history;
-- playback with sensor readings synchronized to recorded time;
-- downloadable day-based archives for both cameras and sensor history;
+- completed daily videos with synchronized timestamps and sensor readings;
 - 1080p individual and combined daily timelapses with sensor overlays;
 - optional checksum-verified Google Drive offload;
 - protected pause, resume, and restart controls;
@@ -218,11 +217,13 @@ and optional offload policy. Production validation requires all required
 cameras to be enabled and a free-space reserve of at least 10 GiB; 10-12 GiB is
 recommended.
 
-## Daily archives and timelapses
+## Daily timelapses
 
-The dashboard's Recordings view groups finalized footage and sensor history by
-calendar day. A day archive streams directly as ZIP64 without constructing a
-second full copy on the Pi.
+The dashboard's Recordings view is a viewer-facing library of completed
+combined timelapses. Users can preview or download the side-by-side daily MP4;
+raw hourly recordings, synchronized raw review, sensor CSV files, and full-day
+archives are intentionally not exposed through the browser. They remain
+internal inputs for rendering and verified Drive offload.
 
 The timelapse renderer uses recording timing metadata to sample a fixed
 midnight-to-midnight timeline. Each day produces two clean, full-resolution
