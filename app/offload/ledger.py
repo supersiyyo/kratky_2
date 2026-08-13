@@ -233,6 +233,23 @@ class OffloadLedger:
             db.execute("UPDATE days SET cleanup_at=? WHERE day=?", (now, day))
             self._refresh_day(db, day)
 
+    def mark_file_removed(self, local_path: str) -> None:
+        """Persist each deletion so cleanup can resume safely after interruption."""
+        now = datetime.now().astimezone().isoformat()
+        with self.connection() as db:
+            row = db.execute(
+                "SELECT day FROM files WHERE local_path=? AND kind='recording'",
+                (local_path,),
+            ).fetchone()
+            if not row:
+                return
+            db.execute(
+                "UPDATE files SET status='LOCAL_REMOVED', local_removed_at=? "
+                "WHERE local_path=? AND status='VERIFIED'",
+                (now, local_path),
+            )
+            self._refresh_day(db, row["day"])
+
     def summary(self) -> dict[str, Any]:
         with self.connection() as db:
             days = [

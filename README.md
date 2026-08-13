@@ -269,17 +269,28 @@ The application requests only the `drive.file` scope and creates its own
 project folder with `raw`, `timelapse-daily`, and `final` subfolders. It does
 not receive general access to the rest of the user's Drive.
 
-Automatic cleanup is day-based. If a source is active, missing, changes size,
-fails upload, or does not match the remote size and MD5, the local recordings
-remain untouched. Once all expected raw sources and the manifest are verified,
-the service may remove only the local `.mkv` files for that date. Timing files,
-sensor history, manifests, timelapses, summaries, and ledger receipts remain on
-the Pi.
+Automatic processing is finalized-day and oldest-first. For one day at a time,
+the service renders the water, environment, and sensor-overlaid combined
+timelapses; validates their H.264 format, 1920x1080 dimensions, frame count,
+duration, checksums, and complete sensor matching; and then registers the raw
+recordings, timing sidecars, sensor history, all three timelapses, and daily
+summary in the ledger. Raw data is uploaded under `raw/YYYY-MM-DD`; retained
+outputs are uploaded under `timelapse-daily/YYYY-MM-DD`.
 
-Daily timelapse rendering and upload are currently explicit operations; the
-background offload service does not yet orchestrate rendering before raw cleanup.
-Keep automatic cleanup disabled when the deployment requires that combined
-render-upload-delete sequence. This is the next automation milestone.
+Uploads are resumable. Every source and the generated manifest must match the
+remote byte size and Google-reported MD5 before a durable daily verification
+receipt is written. Immediately before cleanup, the service validates the local
+timelapses again, checks every local raw recording against the ledger, and
+re-queries every uploaded Drive file. Any active, missing, changed, failed, or
+mismatched file stops cleanup and preserves the remaining recordings.
+
+Only verified `.mkv` source recordings are deleted. Each deletion is recorded
+individually so an interrupted cleanup can resume safely. Timing files, sensor
+history, water/environment/combined timelapses, daily summaries, manifests,
+receipts, and the ledger stay on the Pi. The current calendar day is never
+eligible. Keep `offload.enabled: false` until OAuth, the Drive destination, and
+the cleanup policy have been reviewed for a deployment; enabling it starts this
+pipeline for finalized days automatically.
 
 ## Retention safety
 

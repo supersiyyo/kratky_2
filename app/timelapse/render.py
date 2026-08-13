@@ -63,6 +63,74 @@ def combined_timelapse_path(config: AppConfig, day: str) -> Path:
     return timelapse_root(config) / day / f"combined-timelapse-{day}.mp4"
 
 
+def daily_output_paths(config: AppConfig, day: str) -> dict[str, Path]:
+    destination = timelapse_root(config) / day
+    return {
+        "water": destination / f"water-timelapse-{day}.mp4",
+        "environment": destination / f"environment-timelapse-{day}.mp4",
+        "combined": destination / f"combined-timelapse-{day}.mp4",
+        "summary": destination / "daily-summary.json",
+    }
+
+
+def validate_day_outputs(config: AppConfig, day: str) -> dict[str, Any]:
+    """Validate the complete retained render set without trusting filenames alone."""
+    paths = daily_output_paths(config, day)
+    try:
+        summary = json.loads(paths["summary"].read_text(encoding="utf-8"))
+    except (OSError, TypeError, json.JSONDecodeError) as exc:
+        raise TimelapseError(f"{day} daily timelapse summary is missing or invalid") from exc
+
+    if summary.get("date") != day or summary.get("timezone") != config.deployment.timezone:
+        raise TimelapseError(f"{day} daily timelapse summary identifies the wrong day")
+    timeline = summary.get("timeline")
+    if not isinstance(timeline, dict) or any(
+        timeline.get(key) != expected
+        for key, expected in {
+            "output_seconds": OUTPUT_SECONDS,
+            "output_fps": OUTPUT_FPS,
+            "output_frames": OUTPUT_FRAMES,
+        }.items()
+    ):
+        raise TimelapseError(f"{day} daily timelapse timeline is invalid")
+
+    overlay = summary.get("sensor_overlay")
+    if not isinstance(overlay, dict) or overlay.get("total_frames") != OUTPUT_FRAMES:
+        raise TimelapseError(f"{day} combined timelapse sensor overlay is invalid")
+    for key in ("matched_frames", "environment_frames", "water_frames"):
+        value = overlay.get(key)
+        if value != OUTPUT_FRAMES:
+            raise TimelapseError(f"{day} combined timelapse sensor coverage is invalid")
+
+    metadata = summary.get("outputs")
+    if not isinstance(metadata, dict):
+        raise TimelapseError(f"{day} daily timelapse output metadata is missing")
+    for name in CAMERAS + ("combined",):
+        path = paths[name]
+        item = metadata.get(name)
+        if not path.is_file() or not isinstance(item, dict):
+            raise TimelapseError(f"{day} {name} timelapse is missing")
+        try:
+            declared_size = int(item["size_bytes"])
+            declared_frames = int(item["frame_count"])
+            duration = float(item["duration_seconds"])
+        except (KeyError, TypeError, ValueError) as exc:
+            raise TimelapseError(f"{day} {name} timelapse metadata is invalid") from exc
+        if (
+            item.get("name") != path.name
+            or item.get("codec") != "h264"
+            or item.get("width") != 1920
+            or item.get("height") != 1080
+            or item.get("frame_rate") != "30/1"
+            or declared_frames != OUTPUT_FRAMES
+            or not 29.0 <= duration <= 31.0
+            or declared_size != path.stat().st_size
+            or str(item.get("md5", "")).lower() != _md5(path)
+        ):
+            raise TimelapseError(f"{day} {name} timelapse failed validation")
+    return summary
+
+
 def plan_camera(
     camera: str,
     recordings: Sequence[Recording],

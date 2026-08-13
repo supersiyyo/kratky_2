@@ -24,6 +24,12 @@ from app.offload.google_drive import (
     TokenStore,
 )
 from app.offload.ledger import OffloadLedger
+from app.timelapse.render import (
+    TimelapseError,
+    daily_output_paths,
+    render_day,
+    validate_day_outputs,
+)
 
 
 def offload_directory(config: AppConfig) -> Path:
@@ -131,6 +137,7 @@ class OffloadService:
         if item:
             self.write_state("UPLOADING")
             self._upload_file(item)
+        self._create_verification_receipts()
         self._cleanup_verified_days()
         self.last_error = None
         self.write_state("IDLE" if not self.ledger.pending_file() else "UPLOADING")
@@ -166,9 +173,42 @@ class OffloadService:
         ):
             if day.day >= now_day or not day.complete:
                 continue
+            existing = self.ledger.day(day.day)
+            if existing is not None and existing["cleanup_at"]:
+                continue
+            existing_files = self.ledger.files_for_day(day.day) if existing else []
+            if existing_files and all(
+                any(item["local_path"] == str(path) for item in existing_files)
+                for path in daily_output_paths(self.config, day.day).values()
+            ):
+                continue
+            if existing_files:
+                raise TimelapseError(
+                    f"{day.day} predates automatic timelapse offload; "
+                    "migrate its ledger entry before enabling cleanup"
+                )
+            outputs = daily_output_paths(self.config, day.day)
+            if not all(path.is_file() for path in outputs.values()):
+                self.write_state("RENDERING")
+                render_day(
+                    self.config,
+                    day.day,
+                    force=any(path.exists() for path in outputs.values()),
+                )
+            validate_day_outputs(self.config, day.day)
             sources = archive_sources(
                 day, self.config.storage.root, self.config.runtime.sensor_dir
             )
+            retained = [
+                {
+                    "path": path,
+                    "camera": name if name in ("water", "environment") else None,
+                    "kind": "timelapse_summary" if name == "summary" else "timelapse",
+                    "relative_name": f"timelapse/{path.name}",
+                    "size": path.stat().st_size,
+                }
+                for name, path in outputs.items()
+            ]
             self.ledger.register_day(
                 day.day,
                 [
@@ -180,8 +220,9 @@ class OffloadService:
                         "size": source.path.stat().st_size,
                     }
                     for source in sources
-                ],
+                ] + retained,
             )
+            return
 
     def _create_ready_manifests(self) -> None:
         for day in self.ledger.summary()["days"]:
@@ -213,21 +254,29 @@ class OffloadService:
             atomic_write_json(manifest_path, payload, mode=0o600)
             self.ledger.register_manifest(day_name, manifest_path, manifest_path.stat().st_size)
 
-    def _folder_for(self, day: str, relative_name: str) -> str:
+    def _folder_for(self, item: dict[str, Any]) -> str:
         if self.drive is None:
             raise GoogleDriveError("Google Drive is not configured")
-        day_key = f"folder:raw:{day}"
+        day = str(item["day"])
+        relative_name = str(item["relative_name"])
+        parent_name = "timelapse-daily" if item["kind"] in {
+            "timelapse", "timelapse_summary"
+        } else "raw"
+        day_key = f"folder:{parent_name}:{day}"
         day_folder = self.ledger.setting(day_key)
         if not day_folder:
-            raw_folder = self.ledger.setting("folder:raw")
-            created = self.drive.create_folder(day, raw_folder)
+            parent_folder = self.ledger.setting(f"folder:{parent_name}")
+            if not parent_folder:
+                raise GoogleDriveError(f"Google Drive {parent_name} folder is missing")
+            created = self.drive.create_folder(day, parent_folder)
             day_folder = created["id"]
             self.ledger.set_setting(day_key, day_folder)
-            self.ledger.set_day_folder(day, day_folder, created.get("webViewLink"))
-        if "/" not in relative_name:
+            if parent_name == "raw":
+                self.ledger.set_day_folder(day, day_folder, created.get("webViewLink"))
+        if parent_name == "timelapse-daily" or "/" not in relative_name:
             return str(day_folder)
         section = relative_name.split("/", 1)[0]
-        section_key = f"folder:raw:{day}:{section}"
+        section_key = f"folder:{parent_name}:{day}:{section}"
         section_folder = self.ledger.setting(section_key)
         if not section_folder:
             created = self.drive.create_folder(section, day_folder)
@@ -251,7 +300,7 @@ class OffloadService:
             )
             return
         digest = item.get("md5") or _md5(local_path)
-        folder_id = self._folder_for(item["day"], item["relative_name"])
+        folder_id = self._folder_for(item)
         session = item.get("upload_uri") if item["status"] != "ERROR" else None
         offset = int(item.get("upload_offset") or 0) if session else 0
         if not session:
@@ -309,20 +358,110 @@ class OffloadService:
             error="",
         )
 
+    def _create_verification_receipts(self) -> None:
+        receipts = self.directory / "receipts"
+        for day in self.ledger.summary()["days"]:
+            if day["status"] != "DRIVE_VERIFIED":
+                continue
+            path = receipts / f"{day['day']}.json"
+            if path.is_file():
+                continue
+            files = self.ledger.files_for_day(day["day"])
+            if not files or any(
+                item["status"] not in ("VERIFIED", "LOCAL_REMOVED")
+                or not item["drive_file_id"]
+                or not item["md5"]
+                for item in files
+            ):
+                continue
+            payload = {
+                "schema_version": 1,
+                "date": day["day"],
+                "verified_at": day["verified_at"],
+                "cleanup_performed": False,
+                "files": [
+                    {
+                        "name": item["relative_name"],
+                        "kind": item["kind"],
+                        "size_bytes": item["size"],
+                        "md5": item["md5"],
+                        "google_drive_file_id": item["drive_file_id"],
+                    }
+                    for item in files
+                ],
+            }
+            atomic_write_json(path, payload, mode=0o600)
+
+    def _reverify_day_on_drive(self, day: str) -> None:
+        if self.drive is None:
+            raise GoogleDriveError("Google Drive is not configured")
+        for item in self.ledger.files_for_day(day):
+            file_id = item.get("drive_file_id")
+            digest = str(item.get("md5") or "").lower()
+            if (
+                item["status"] not in ("VERIFIED", "LOCAL_REMOVED")
+                or not file_id
+                or not digest
+            ):
+                raise GoogleDriveError(f"{day} is not fully verified for cleanup")
+            metadata = self.drive.file_metadata(str(file_id))
+            if (
+                metadata.get("trashed")
+                or int(metadata.get("size", -1)) != item["size"]
+                or str(metadata.get("md5Checksum", "")).lower() != digest
+            ):
+                raise GoogleDriveError(
+                    f"{day} remote verification changed; local recordings retained"
+                )
+
+    def _validate_local_recordings(self, day: str) -> None:
+        for item in self.ledger.files_for_day(day):
+            if item["kind"] != "recording" or item["status"] == "LOCAL_REMOVED":
+                continue
+            path = Path(item["local_path"])
+            if (
+                item["status"] != "VERIFIED"
+                or not path.is_file()
+                or path.stat().st_size != item["size"]
+                or _md5(path).lower() != str(item.get("md5") or "").lower()
+            ):
+                raise OSError(f"{day} local recording changed; cleanup stopped")
+
     def _cleanup_verified_days(self) -> None:
         if not self.ledger.setting("auto_cleanup", self.config.offload.auto_cleanup):
             return
         for day in self.ledger.summary()["days"]:
-            if day["status"] != "DRIVE_VERIFIED" or day["cleanup_at"]:
+            if (
+                day["status"] not in ("DRIVE_VERIFIED", "LOCAL_REMOVED")
+                or day["cleanup_at"]
+            ):
                 continue
-            removed: list[str] = []
+            receipt_path = self.directory / "receipts" / f"{day['day']}.json"
+            receipt = read_json(receipt_path, {})
+            if (
+                receipt.get("date") != day["day"]
+                or receipt.get("cleanup_performed") is not False
+            ):
+                continue
+            validate_day_outputs(self.config, day["day"])
+            self._reverify_day_on_drive(day["day"])
+            self._validate_local_recordings(day["day"])
             for item in self.ledger.files_for_day(day["day"]):
                 if item["kind"] != "recording" or item["status"] != "VERIFIED":
                     continue
                 path = Path(item["local_path"])
-                path.unlink(missing_ok=True)
-                removed.append(str(path))
-            self.ledger.mark_cleanup(day["day"], removed)
+                path.unlink()
+                self.ledger.mark_file_removed(str(path))
+            self.ledger.mark_cleanup(day["day"], [])
+            receipt["cleanup_performed"] = True
+            receipt["cleanup_at"] = self.ledger.day(day["day"])["cleanup_at"]
+            receipt["removed_recordings"] = [
+                item["local_path"]
+                for item in self.ledger.files_for_day(day["day"])
+                if item["kind"] == "recording"
+                and item["status"] == "LOCAL_REMOVED"
+            ]
+            atomic_write_json(receipt_path, receipt, mode=0o600)
 
     def write_state(self, status: str) -> None:
         atomic_write_json(
@@ -339,7 +478,7 @@ class OffloadService:
         while self.running:
             try:
                 self.tick()
-            except (GoogleDriveError, OSError, ValueError, KeyError) as exc:
+            except (GoogleDriveError, TimelapseError, OSError, ValueError, KeyError) as exc:
                 self.last_error = str(exc)
                 self.write_state("ERROR")
             for _ in range(int(self.config.offload.interval_seconds * 2)):

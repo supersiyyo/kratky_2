@@ -1,7 +1,10 @@
 import hashlib
+import json
 from datetime import datetime, timedelta
 from pathlib import Path
 from zoneinfo import ZoneInfo
+
+import pytest
 
 from app.capture.recordings import recording_path, timing_path
 from app.capture.state import atomic_write_json
@@ -15,6 +18,13 @@ from app.offload.service import (
     token_path,
 )
 from app.sensors.history import append_history, daily_history_path
+from app.timelapse.render import (
+    OUTPUT_FPS,
+    OUTPUT_FRAMES,
+    OUTPUT_SECONDS,
+    TimelapseError,
+    daily_output_paths,
+)
 from tests.unit.test_config import valid_mapping
 from tests.unit.test_sensor_history import snapshot
 
@@ -71,6 +81,16 @@ class CorruptingDrive(FakeDrive):
         return metadata
 
 
+class ToggleCorruptDrive(FakeDrive):
+    corrupt = False
+
+    def file_metadata(self, file_id: str):
+        metadata = dict(super().file_metadata(file_id))
+        if self.corrupt:
+            metadata["md5Checksum"] = "0" * 32
+        return metadata
+
+
 class FailsFirstUploadDrive(FakeDrive):
     def __init__(self) -> None:
         super().__init__()
@@ -123,6 +143,55 @@ def create_complete_day(config, first: datetime) -> dict[str, Path]:
     return paths
 
 
+def create_valid_timelapses(config, day: str) -> dict[str, Path]:
+    paths = daily_output_paths(config, day)
+    metadata = {}
+    for name in ("water", "environment", "combined"):
+        path = paths[name]
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(f"{name}-{day}-h264".encode())
+        metadata[name] = {
+            "name": path.name,
+            "size_bytes": path.stat().st_size,
+            "md5": hashlib.md5(path.read_bytes(), usedforsecurity=False).hexdigest(),
+            "codec": "h264",
+            "width": 1920,
+            "height": 1080,
+            "frame_rate": "30/1",
+            "frame_count": OUTPUT_FRAMES,
+            "duration_seconds": 30.0,
+        }
+    paths["summary"].write_text(
+        json.dumps(
+            {
+                "schema_version": 1,
+                "date": day,
+                "timezone": config.deployment.timezone,
+                "timeline": {
+                    "output_seconds": OUTPUT_SECONDS,
+                    "output_fps": OUTPUT_FPS,
+                    "output_frames": OUTPUT_FRAMES,
+                },
+                "sensor_overlay": {
+                    "total_frames": OUTPUT_FRAMES,
+                    "matched_frames": OUTPUT_FRAMES,
+                    "environment_frames": OUTPUT_FRAMES,
+                    "water_frames": OUTPUT_FRAMES,
+                },
+                "outputs": metadata,
+            }
+        ),
+        encoding="utf-8",
+    )
+    return paths
+
+
+def configure_destination(service: OffloadService) -> None:
+    service.ledger.set_setting("project_folder_id", "project")
+    service.ledger.set_setting("folder:raw", "raw")
+    service.ledger.set_setting("folder:timelapse-daily", "timelapse")
+
+
 def test_enabled_service_waits_safely_for_dashboard_oauth_setup(tmp_path: Path) -> None:
     raw = valid_mapping(tmp_path)
     raw["offload"] = {"enabled": True}
@@ -139,6 +208,103 @@ def test_enabled_service_waits_safely_for_dashboard_oauth_setup(tmp_path: Path) 
     )
 
 
+def test_complete_day_renders_before_any_source_is_registered(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = offload_config(tmp_path)
+    first = datetime(2026, 8, 10, 8, tzinfo=TZ)
+    create_complete_day(config, first)
+    rendered: list[str] = []
+
+    def render(_config, day, **_kwargs):
+        rendered.append(day)
+        create_valid_timelapses(config, day)
+
+    drive = FakeDrive()
+    monkeypatch.setattr("app.offload.service.render_day", render)
+    monkeypatch.setattr(
+        "app.offload.service.build_google", lambda _config: (object(), drive)
+    )
+    TokenStore(token_path(config)).save({"refresh_token": "test"})
+    service = OffloadService(config)
+    configure_destination(service)
+    service.ledger.set_setting("auto_cleanup", False)
+
+    service.tick()
+
+    assert rendered == ["2026-08-10"]
+    files = service.ledger.files_for_day("2026-08-10")
+    assert {item["kind"] for item in files} >= {
+        "recording",
+        "timing",
+        "sensor_history",
+        "timelapse",
+        "timelapse_summary",
+    }
+
+
+def test_legacy_pending_day_is_not_cleaned_without_timelapse_migration(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = offload_config(tmp_path)
+    first = datetime(2026, 8, 10, 8, tzinfo=TZ)
+    recordings = create_complete_day(config, first)
+    drive = FakeDrive()
+    monkeypatch.setattr(
+        "app.offload.service.build_google", lambda _config: (object(), drive)
+    )
+    TokenStore(token_path(config)).save({"refresh_token": "test"})
+    service = OffloadService(config)
+    configure_destination(service)
+    service.ledger.register_day(
+        "2026-08-10",
+        [
+            {
+                "path": path,
+                "camera": camera,
+                "kind": "recording",
+                "relative_name": f"{camera}/{path.name}",
+                "size": path.stat().st_size,
+            }
+            for camera, path in recordings.items()
+        ],
+    )
+
+    with pytest.raises(TimelapseError, match="predates automatic timelapse offload"):
+        service.tick()
+
+    assert all(path.is_file() for path in recordings.values())
+    assert service.ledger.day("2026-08-10")["cleanup_at"] is None
+
+
+def test_sensor_overlay_gap_blocks_registration_and_cleanup(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = offload_config(tmp_path)
+    first = datetime(2026, 8, 10, 8, tzinfo=TZ)
+    recordings = create_complete_day(config, first)
+    outputs = create_valid_timelapses(config, "2026-08-10")
+    summary = json.loads(outputs["summary"].read_text(encoding="utf-8"))
+    summary["sensor_overlay"]["matched_frames"] = OUTPUT_FRAMES - 1
+    outputs["summary"].write_text(json.dumps(summary), encoding="utf-8")
+    drive = FakeDrive()
+    monkeypatch.setattr(
+        "app.offload.service.build_google", lambda _config: (object(), drive)
+    )
+    TokenStore(token_path(config)).save({"refresh_token": "test"})
+    service = OffloadService(config)
+    configure_destination(service)
+
+    with pytest.raises(TimelapseError, match="sensor coverage"):
+        service.tick()
+
+    assert service.ledger.day("2026-08-10") is None
+    assert all(path.is_file() for path in recordings.values())
+
+
 def test_verified_complete_day_removes_only_local_video_files(
     tmp_path: Path,
     monkeypatch,
@@ -146,28 +312,34 @@ def test_verified_complete_day_removes_only_local_video_files(
     config = offload_config(tmp_path)
     first = datetime(2026, 8, 10, 8, tzinfo=TZ)
     recordings = create_complete_day(config, first)
+    timelapses = create_valid_timelapses(config, "2026-08-10")
     fake_drive = FakeDrive()
     monkeypatch.setattr(
         "app.offload.service.build_google", lambda _config: (object(), fake_drive)
     )
     TokenStore(token_path(config)).save({"refresh_token": "test"})
     service = OffloadService(config)
-    service.ledger.set_setting("project_folder_id", "project")
-    service.ledger.set_setting("folder:raw", "raw")
+    configure_destination(service)
     service.ledger.set_setting("auto_cleanup", True)
 
-    for _ in range(10):
+    for _ in range(15):
         service.tick()
 
     day = OffloadLedger(ledger_path(config)).day("2026-08-10")
     assert day is not None
     assert day["status"] == "LOCAL_REMOVED"
-    assert day["verified_files"] == day["expected_files"] == 6
+    assert day["verified_files"] == day["expected_files"] == 10
     assert not recordings["water"].exists()
     assert not recordings["environment"].exists()
     assert timing_path(recordings["water"]).is_file()
     assert timing_path(recordings["environment"]).is_file()
     assert daily_history_path(config.runtime.sensor_dir, first).is_file()
+    assert all(path.is_file() for path in timelapses.values())
+    receipt = json.loads(
+        (service.directory / "receipts" / "2026-08-10.json").read_text()
+    )
+    assert receipt["cleanup_performed"] is True
+    assert len(receipt["removed_recordings"]) == 2
 
 
 def test_incomplete_day_is_not_registered_or_deleted(
@@ -185,8 +357,7 @@ def test_incomplete_day_is_not_registered_or_deleted(
     )
     TokenStore(token_path(config)).save({"refresh_token": "test"})
     service = OffloadService(config)
-    service.ledger.set_setting("project_folder_id", "project")
-    service.ledger.set_setting("folder:raw", "raw")
+    configure_destination(service)
 
     service.tick()
 
@@ -201,14 +372,14 @@ def test_remote_checksum_mismatch_preserves_every_local_video(
     config = offload_config(tmp_path)
     first = datetime(2026, 8, 10, 8, tzinfo=TZ)
     recordings = create_complete_day(config, first)
+    create_valid_timelapses(config, "2026-08-10")
     corrupting_drive = CorruptingDrive()
     monkeypatch.setattr(
         "app.offload.service.build_google", lambda _config: (object(), corrupting_drive)
     )
     TokenStore(token_path(config)).save({"refresh_token": "test"})
     service = OffloadService(config)
-    service.ledger.set_setting("project_folder_id", "project")
-    service.ledger.set_setting("folder:raw", "raw")
+    configure_destination(service)
 
     service.tick()
 
@@ -227,14 +398,14 @@ def test_failed_upload_restarts_with_a_new_session_and_then_verifies(
     config = offload_config(tmp_path)
     first = datetime(2026, 8, 10, 8, tzinfo=TZ)
     recordings = create_complete_day(config, first)
+    create_valid_timelapses(config, "2026-08-10")
     drive = FailsFirstUploadDrive()
     monkeypatch.setattr(
         "app.offload.service.build_google", lambda _config: (object(), drive)
     )
     TokenStore(token_path(config)).save({"refresh_token": "test"})
     service = OffloadService(config)
-    service.ledger.set_setting("project_folder_id", "project")
-    service.ledger.set_setting("folder:raw", "raw")
+    configure_destination(service)
 
     service.tick()
     failed = service.ledger.pending_file()
@@ -244,7 +415,66 @@ def test_failed_upload_restarts_with_a_new_session_and_then_verifies(
     assert recordings["environment"].is_file()
     assert recordings["water"].is_file()
 
-    for _ in range(10):
+    for _ in range(15):
         service.tick()
 
     assert service.ledger.day("2026-08-10")["status"] == "LOCAL_REMOVED"
+
+
+def test_cleanup_rechecks_drive_and_preserves_raw_video_if_remote_changed(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = offload_config(tmp_path)
+    first = datetime(2026, 8, 10, 8, tzinfo=TZ)
+    recordings = create_complete_day(config, first)
+    create_valid_timelapses(config, "2026-08-10")
+    drive = ToggleCorruptDrive()
+    monkeypatch.setattr(
+        "app.offload.service.build_google", lambda _config: (object(), drive)
+    )
+    TokenStore(token_path(config)).save({"refresh_token": "test"})
+    service = OffloadService(config)
+    configure_destination(service)
+    service.ledger.set_setting("auto_cleanup", False)
+
+    for _ in range(15):
+        service.tick()
+    assert service.ledger.day("2026-08-10")["status"] == "DRIVE_VERIFIED"
+
+    drive.corrupt = True
+    service.ledger.set_setting("auto_cleanup", True)
+    with pytest.raises(GoogleDriveError, match="remote verification changed"):
+        service.tick()
+
+    assert all(path.is_file() for path in recordings.values())
+    assert service.ledger.day("2026-08-10")["cleanup_at"] is None
+
+
+def test_cleanup_rechecks_local_md5_before_deleting_any_raw_video(
+    tmp_path: Path,
+    monkeypatch,
+) -> None:
+    config = offload_config(tmp_path)
+    first = datetime(2026, 8, 10, 8, tzinfo=TZ)
+    recordings = create_complete_day(config, first)
+    create_valid_timelapses(config, "2026-08-10")
+    drive = FakeDrive()
+    monkeypatch.setattr(
+        "app.offload.service.build_google", lambda _config: (object(), drive)
+    )
+    TokenStore(token_path(config)).save({"refresh_token": "test"})
+    service = OffloadService(config)
+    configure_destination(service)
+    service.ledger.set_setting("auto_cleanup", False)
+
+    for _ in range(15):
+        service.tick()
+    recordings["water"].write_bytes(b"changed-after-upload")
+    service.ledger.set_setting("auto_cleanup", True)
+
+    with pytest.raises(OSError, match="local recording changed"):
+        service.tick()
+
+    assert all(path.is_file() for path in recordings.values())
+    assert service.ledger.day("2026-08-10")["cleanup_at"] is None
