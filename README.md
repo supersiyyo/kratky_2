@@ -284,6 +284,14 @@ timelapses again, checks every local raw recording against the ledger, and
 re-queries every uploaded Drive file. Any active, missing, changed, failed, or
 mismatched file stops cleanup and preserves the remaining recordings.
 
+If an interrupted service shutdown leaves a finalized prior-day MKV without its
+timing sidecar, the offload scanner can reconstruct that metadata from the
+video's verified packet count and the filename timestamp. This recovery assumes
+the enforced 1 fps archive format, marks the sidecar as recovered, and never
+touches the current date or any active recording. Camera shutdowns run in
+parallel and systemd allows up to 120 seconds for both encoders to finalize,
+reducing the chance that recovery is needed after future updates.
+
 Only verified `.mkv` source recordings are deleted. Each deletion is recorded
 individually so an interrupted cleanup can resume safely. Timing files, sensor
 history, water/environment/combined timelapses, daily summaries, manifests,

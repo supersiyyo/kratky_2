@@ -13,7 +13,7 @@ Environment=KRATKY_CONFIG=/etc/kratky/config.yaml
 ExecStart=/home/kratky/kratky-monitor/.venv/bin/python -m app.capture.service
 Restart=on-failure
 RestartSec=10
-TimeoutStopSec=30
+TimeoutStopSec=120
 KillMode=mixed
 NoNewPrivileges=true
 PrivateTmp=true

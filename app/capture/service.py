@@ -255,8 +255,18 @@ class CaptureManager:
     def shutdown(self) -> None:
         with self.lock:
             self.running = False
-            for name, worker in self.workers.items():
-                worker.stop(paused=name in self.paused)
+            threads = [
+                threading.Thread(
+                    target=worker.stop,
+                    kwargs={"paused": name in self.paused},
+                    name=f"kratky-stop-{name}",
+                )
+                for name, worker in self.workers.items()
+            ]
+            for thread in threads:
+                thread.start()
+            for thread in threads:
+                thread.join()
             self.write_snapshot()
 
 

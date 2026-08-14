@@ -30,3 +30,11 @@ def test_offload_service_is_low_priority_and_owns_verified_cleanup() -> None:
     assert "app.offload.service" in unit
     assert "/var/lib/kratky/recordings" in unit
     assert "ExecCondition=" in unit
+
+
+def test_capture_service_allows_both_encoders_to_finalize_on_shutdown() -> None:
+    unit = (
+        Path(__file__).parents[2] / "systemd" / "kratky-capture.service"
+    ).read_text(encoding="utf-8")
+
+    assert "TimeoutStopSec=120" in unit

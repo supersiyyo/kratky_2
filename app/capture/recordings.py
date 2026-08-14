@@ -2,10 +2,14 @@ from __future__ import annotations
 
 import json
 import re
+import subprocess
 from dataclasses import dataclass
 from datetime import datetime, timedelta
 from pathlib import Path
+from typing import Callable
 from zoneinfo import ZoneInfo
+
+from app.capture.state import atomic_write_json
 
 
 RECORDING_RE = re.compile(
@@ -124,6 +128,86 @@ def parse_start(path: Path, timezone: ZoneInfo) -> datetime | None:
 
 def timing_path(recording: Path) -> Path:
     return recording.with_suffix(".timing.json")
+
+
+def recover_missing_timing_sidecars(
+    root: Path,
+    timezone: ZoneInfo,
+    before_day: str,
+    active_paths: set[Path] | None = None,
+    *,
+    packet_counter: Callable[[Path], int] | None = None,
+) -> tuple[Path, ...]:
+    """Recover finalized prior-day 1 fps recordings interrupted before metadata write."""
+    active = {path.resolve() for path in (active_paths or set())}
+    count_packets = packet_counter or _recording_packet_count
+    recovered: list[Path] = []
+    for directory in sorted(root.glob("????-??-??")):
+        if not directory.is_dir() or directory.name >= before_day:
+            continue
+        for recording in sorted(directory.glob("*/*.mkv")):
+            sidecar = timing_path(recording)
+            if sidecar.exists() or recording.resolve() in active:
+                continue
+            match = RECORDING_RE.fullmatch(recording.name)
+            start = parse_start(recording, timezone)
+            if (
+                match is None
+                or start is None
+                or match.group("camera") != recording.parent.name
+                or recording.parent.name not in EXPECTED_CAMERAS
+                or not recording.is_file()
+                or recording.stat().st_size < 1
+            ):
+                continue
+            frame_count = count_packets(recording)
+            if frame_count < 1:
+                raise ValueError(f"recording contains no video frames: {recording}")
+            last = start + timedelta(seconds=frame_count - 1)
+            atomic_write_json(
+                sidecar,
+                {
+                    "camera": recording.parent.name,
+                    "first_frame_at": start.isoformat(),
+                    "last_frame_at": last.isoformat(),
+                    "frame_count": frame_count,
+                    "recovered": True,
+                    "recovery_source": "ffprobe_packet_count_at_1_fps",
+                    "recovered_at": datetime.now(timezone).isoformat(),
+                },
+                mode=0o644,
+            )
+            recovered.append(sidecar)
+    return tuple(recovered)
+
+
+def _recording_packet_count(path: Path, ffprobe: str = "ffprobe") -> int:
+    try:
+        result = subprocess.run(
+            [
+                ffprobe,
+                "-v", "error",
+                "-count_packets",
+                "-select_streams", "v:0",
+                "-show_entries", "stream=nb_read_packets",
+                "-of", "json",
+                str(path),
+            ],
+            check=True,
+            capture_output=True,
+            text=True,
+        )
+        return int(json.loads(result.stdout)["streams"][0]["nb_read_packets"])
+    except (
+        FileNotFoundError,
+        subprocess.CalledProcessError,
+        ValueError,
+        KeyError,
+        IndexError,
+        TypeError,
+        json.JSONDecodeError,
+    ) as exc:
+        raise ValueError(f"could not recover timing metadata from {path}") from exc
 
 
 def recording_timing(

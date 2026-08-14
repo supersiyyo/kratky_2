@@ -11,7 +11,7 @@ from typing import Any
 from zoneinfo import ZoneInfo
 
 from app.capture.archive import archive_sources
-from app.capture.recordings import list_recording_days
+from app.capture.recordings import list_recording_days, recover_missing_timing_sidecars
 from app.capture.state import atomic_write_json, read_json
 from app.common.config import AppConfig, load_config
 from app.common.paths import capture_state_path
@@ -163,6 +163,12 @@ class OffloadService:
             for value in capture.get("cameras", {}).values()
             if value.get("current_recording")
         }
+        recover_missing_timing_sidecars(
+            self.config.storage.root,
+            self.timezone,
+            now_day,
+            active,
+        )
         for day in reversed(
             list_recording_days(
                 self.config.storage.root,

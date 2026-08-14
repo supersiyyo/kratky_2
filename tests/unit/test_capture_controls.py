@@ -1,5 +1,6 @@
 from datetime import datetime, timedelta
 from pathlib import Path
+from threading import Barrier
 
 from app.capture.service import CaptureManager
 from app.common.config import config_from_mapping
@@ -59,3 +60,25 @@ def test_disabled_camera_cannot_be_targeted(tmp_path: Path) -> None:
         assert str(exc) == "camera is not enabled: environment"
     else:
         raise AssertionError("disabled camera target was accepted")
+
+
+def test_shutdown_finalizes_camera_workers_concurrently(tmp_path: Path) -> None:
+    manager = manager_for(tmp_path)
+    barrier = Barrier(2)
+    stopped: list[tuple[str, bool]] = []
+
+    class Worker:
+        def __init__(self, name: str):
+            self.name = name
+
+        def stop(self, paused: bool = False) -> None:
+            barrier.wait(timeout=1)
+            stopped.append((self.name, paused))
+
+    manager.workers = {"water": Worker("water"), "environment": Worker("environment")}  # type: ignore[assignment]
+    manager.paused = {"water"}
+    manager.write_snapshot = lambda: None  # type: ignore[method-assign]
+
+    manager.shutdown()
+
+    assert sorted(stopped) == [("environment", False), ("water", True)]

@@ -1,3 +1,4 @@
+import json
 from datetime import datetime
 from pathlib import Path
 from zoneinfo import ZoneInfo
@@ -8,6 +9,7 @@ from app.capture.recordings import (
     next_hour,
     recording_day,
     recording_path,
+    recover_missing_timing_sidecars,
     timing_path,
 )
 
@@ -85,3 +87,58 @@ def test_days_are_derived_and_sorted_newest_first(tmp_path: Path) -> None:
     days = list_recording_days(tmp_path, sensor_directory, TZ)
 
     assert [item.day for item in days] == ["2026-07-26", "2026-07-24"]
+
+
+def test_missing_prior_day_timing_is_recovered_from_one_fps_packet_count(
+    tmp_path: Path,
+) -> None:
+    recording = recording_path(
+        tmp_path,
+        "environment",
+        datetime(2026, 8, 13, 14, 0, 6, tzinfo=TZ),
+    )
+    recording.write_bytes(b"valid-video")
+
+    recovered = recover_missing_timing_sidecars(
+        tmp_path,
+        TZ,
+        "2026-08-14",
+        packet_counter=lambda path: 3133 if path == recording else 0,
+    )
+
+    assert recovered == (timing_path(recording),)
+    payload = json.loads(timing_path(recording).read_text(encoding="utf-8"))
+    assert payload["camera"] == "environment"
+    assert payload["first_frame_at"] == "2026-08-13T14:00:06-07:00"
+    assert payload["last_frame_at"] == "2026-08-13T14:52:18-07:00"
+    assert payload["frame_count"] == 3133
+    assert payload["recovered"] is True
+
+
+def test_timing_recovery_never_touches_current_day_or_active_recording(
+    tmp_path: Path,
+) -> None:
+    old_active = recording_path(
+        tmp_path,
+        "water",
+        datetime(2026, 8, 13, 23, tzinfo=TZ),
+    )
+    current = recording_path(
+        tmp_path,
+        "water",
+        datetime(2026, 8, 14, 9, tzinfo=TZ),
+    )
+    old_active.write_bytes(b"active-old-video")
+    current.write_bytes(b"active-current-video")
+
+    recovered = recover_missing_timing_sidecars(
+        tmp_path,
+        TZ,
+        "2026-08-14",
+        {old_active},
+        packet_counter=lambda _path: 60,
+    )
+
+    assert recovered == ()
+    assert not timing_path(old_active).exists()
+    assert not timing_path(current).exists()
